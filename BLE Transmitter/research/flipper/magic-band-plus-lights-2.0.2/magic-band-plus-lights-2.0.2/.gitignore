@@ -1,0 +1,5 @@
+/build/
+/dist/
+/.ufbt/
+/.vscode/
+.DS_Store
