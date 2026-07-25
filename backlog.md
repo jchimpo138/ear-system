@@ -2,7 +2,7 @@
 > NOTE: Features in this file are NOT part of the current build milestone.
 
 ## v1.1 - Enhancements
-- [ ] motion sensor
+- [x] motion sensor (LIS3DSH I2C shake trigger & animation mode switching)
 - [ ] i2c battery info
 - [ ] battery sweep on start (2x 10k resistor divider to ADC pin for LiPo B+ voltage monitoring)
 - [ ] RSSI filter threshold (-90 dBm)

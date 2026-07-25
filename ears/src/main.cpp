@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include <FastLED.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
@@ -10,7 +11,21 @@
 #define LED_PIN         2   // Connected to GP2 (Row 33, Column B)
 #define BUTTON_PIN      4   // Connected to GP4 (Row 35, Column B)
 #define HAPTIC_PIN      5   // Connected to GP5 (Row 36, Column B -> Row 50)
+#define SDA_PIN         8   // I2C Data Pin (GP8)
+#define SCL_PIN         9   // I2C Clock Pin (GP9)
 #define NUM_PIXELS      32  // Bench testing pixel count (Split: 16 Left, 16 Right)
+
+// --- LIS3DSH Accelerometer Registers ---
+#define LIS3DSH_ADDR1       0x1D // SA0 = HIGH (3.3V)
+#define LIS3DSH_ADDR2       0x1E // SA0 = LOW (GND)
+#define LIS3DSH_WHO_AM_I    0x0F // Expected return: 0x3F
+#define LIS3DSH_CTRL_REG4   0x20 // ODR and axis selection
+#define LIS3DSH_CTRL_REG5   0x24 // Scale selection
+#define LIS3DSH_OUT_X_L     0x28 // Start of output registers
+
+uint8_t lis3dshAddr = 0;
+bool lis3dshFound = false;
+unsigned long lastMotionTriggerTime = 0;
 
 CRGB leds[NUM_PIXELS];
 
@@ -326,6 +341,95 @@ void scanCompleteCB(BLEScanResults scanResults) {
     isScanning = false;
 }
 
+// --- LIS3DSH Driver Helper Functions ---
+uint8_t readLIS3DSHReg(uint8_t addr, uint8_t reg) {
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) return 0x00;
+    Wire.requestFrom(addr, (uint8_t)1);
+    return Wire.available() ? Wire.read() : 0x00;
+}
+
+void writeLIS3DSHReg(uint8_t addr, uint8_t reg, uint8_t val) {
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    Wire.write(val);
+    Wire.endTransmission();
+}
+
+bool initLIS3DSH() {
+    Wire.begin(SDA_PIN, SCL_PIN, 400000); // 400kHz I2C clock speed
+
+    uint8_t addrs[2] = { LIS3DSH_ADDR1, LIS3DSH_ADDR2 };
+    for (int i = 0; i < 2; i++) {
+        uint8_t id = readLIS3DSHReg(addrs[i], LIS3DSH_WHO_AM_I);
+        if (id == 0x3F) {
+            lis3dshAddr = addrs[i];
+            lis3dshFound = true;
+            break;
+        }
+    }
+
+    if (!lis3dshFound) {
+        Serial.println("⚠️ [MOTION SENSOR] LIS3DSH not detected on I2C bus (probed 0x1D & 0x1E).");
+        return false;
+    }
+
+    // CTRL_REG4 (0x20): 100Hz ODR + BDU enabled + X/Y/Z active (0x67)
+    writeLIS3DSHReg(lis3dshAddr, LIS3DSH_CTRL_REG4, 0x67);
+    // CTRL_REG5 (0x24): Full-scale range +/-2g (0x00)
+    writeLIS3DSHReg(lis3dshAddr, LIS3DSH_CTRL_REG5, 0x00);
+
+    Serial.printf("✅ [MOTION SENSOR] LIS3DSH initialized at I2C address 0x%02X! (WHO_AM_I: 0x3F)\n", lis3dshAddr);
+    return true;
+}
+
+bool readLIS3DSH(float &accelX, float &accelY, float &accelZ) {
+    if (!lis3dshFound) return false;
+
+    Wire.beginTransmission(lis3dshAddr);
+    Wire.write(LIS3DSH_OUT_X_L);
+    if (Wire.endTransmission(false) != 0) return false;
+
+    Wire.requestFrom(lis3dshAddr, (uint8_t)6);
+    if (Wire.available() < 6) return false;
+
+    int16_t rawX = (int16_t)(Wire.read() | (Wire.read() << 8));
+    int16_t rawY = (int16_t)(Wire.read() | (Wire.read() << 8));
+    int16_t rawZ = (int16_t)(Wire.read() | (Wire.read() << 8));
+
+    accelX = rawX * 0.000061f; // Sensitivity for +/-2g scale is 0.061 mg/LSB
+    accelY = rawY * 0.000061f;
+    accelZ = rawZ * 0.000061f;
+
+    return true;
+}
+
+void checkMotionTrigger() {
+    if (!lis3dshFound) return;
+
+    unsigned long now = millis();
+    if (now - lastMotionTriggerTime < 1500) return; // 1.5s shake debounce cooldown
+
+    float ax, ay, az;
+    if (readLIS3DSH(ax, ay, az)) {
+        float totalG = sqrt(ax * ax + ay * ay + az * az);
+
+        // Motion Shake threshold: Total acceleration >= 2.2g
+        if (totalG >= 2.2f) {
+            lastMotionTriggerTime = now;
+            animationState = (animationState + 1) % 8; // Advance local animation mode
+            
+            Serial.printf("💫 [MOTION SHAKE DETECTED!] Force: %.2fg | Switching to Animation Mode: %d\n", totalG, animationState);
+
+            // Haptic tap feedback on shake
+            digitalWrite(HAPTIC_PIN, HIGH);
+            delay(60);
+            digitalWrite(HAPTIC_PIN, LOW);
+        }
+    }
+}
+
 void setup() {
     pinMode(BUTTON_PIN, INPUT_PULLUP); 
     pinMode(HAPTIC_PIN, OUTPUT);       
@@ -344,6 +448,9 @@ void setup() {
     FastLED.setMaxPowerInVoltsAndMilliamps(5, 600); 
     FastLED.setBrightness(255);                     
 
+    // Initialize LIS3DSH I2C Motion Sensor
+    initLIS3DSH();
+
     BLEDevice::init("InteractiveWearable");
     pBLEScan = BLEDevice::getScan(); 
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
@@ -361,6 +468,9 @@ void setup() {
 void loop() {
     bool currentButtonState = digitalRead(BUTTON_PIN);
     unsigned long currentMillis = millis();
+
+    // Check motion sensor shake triggers
+    checkMotionTrigger();
 
     // Rapid 1-second scan cycles with zero gap (clears result cache each cycle
     // so the same transmitter MAC triggers onResult every time)
