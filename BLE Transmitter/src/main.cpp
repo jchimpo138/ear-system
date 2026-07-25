@@ -128,36 +128,60 @@ void broadcastDirectRGB() {
 }
 
 void broadcastHighContrast() {
+  // E9 0B High Contrast Blue & White Circle microcode
   const uint8_t data[] = {0xE1, 0x00, 0xE9, 0x0B, 0x0B, 0x0F, 0x0F, 0x5C,
-                          0x42, 0x5C, 0xA2, 0xDC, 0x42, 0x32, 0x05};
+                          0x5D, 0x48, 0xA5, 0xD1, 0x45, 0x32, 0x05};
   sendPayload(data, sizeof(data));
 }
 
 void broadcastStrobePulse() {
-  uint8_t data[] = {0xE1,
-                    0x00,
-                    0xE9,
-                    0x0E,
-                    0x00,
-                    timingByte,
-                    0x0F,
-                    (uint8_t)(0x40 | (color1Idx & 0x1F)),
-                    (uint8_t)(0x40 | (color2Idx & 0x1F)),
-                    (uint8_t)(0xB0 | (vibePattern & 0x0F))};
+  // Authentic Disney Microcode for MagicBand+ Blink White (Lightning Strobe)
+  const uint8_t data[] = {0xE1, 0x00, 0xE9, 0x0C, 0x00, 0x0F, 0x0F, 0x5D,
+                          0x46, 0x5B, 0xF0, 0x05, 0x32, 0x37, 0x48, 0x95};
   sendPayload(data, sizeof(data));
 }
 
+inline float getTimingDurationSec(uint8_t tb) {
+  bool scalerBit = (tb & 0x40) != 0;
+  uint8_t timeVal = tb & 0x0F;
+  return scalerBit ? (3.1f * (float)timeVal + 0.5f) : (1.5f * (float)timeVal + 0.5f);
+}
+
 void broadcastWavePulse() {
-  uint8_t data[] = {0xE2,
-                    0x00,
-                    0xE9,
-                    0x12,
-                    0x00,
-                    timingByte,
-                    0x0F,
-                    (uint8_t)(0x40 | (color1Idx & 0x1F)),
-                    (uint8_t)(0x40 | (color2Idx & 0x1F)),
-                    (uint8_t)(0xB0 | (vibePattern & 0x0F))};
+  uint8_t c1 = (uint8_t)(color1Idx & 0x1F);
+  uint8_t c2 = (uint8_t)(color2Idx & 0x1F);
+
+  // Default to non-blue colors: Purple (0x01) and Red (0x15)
+  if (c1 == 0 && c2 == 15) {
+    c1 = 0x01; // Purple
+    c2 = 0x15; // Red
+  }
+
+  float durSec = getTimingDurationSec(timingByte);
+  bool alwaysOn = (timingByte & 0x80) != 0;
+  Serial.printf("[%lu ms] 🌊 Wave Pulse (E9 12) TX | Color 1: %s (0x%02X) | Color 2: %s (0x%02X) | Timing: 0x%02X (%s%.1fs) | Vibe: 0x%02X\n",
+                millis(), DISNEY_PALETTE_NAMES[c1], c1, DISNEY_PALETTE_NAMES[c2], c2, timingByte, alwaysOn ? "Always-On, " : "", durSec, vibePattern);
+
+  // Authentic 22-byte Disney microcode array with dynamic color injection
+  uint8_t data[] = {
+      0xE2, 0x00, 0xE9, 0x12, 0x00, timingByte, 0x0F,
+      (uint8_t)(0xA0 | c1),
+      (uint8_t)(0xA0 | c1),
+      (uint8_t)(0xA0 | c2),
+      (uint8_t)(0xA0 | c2),
+      (uint8_t)(0xA0 | c1),
+      0x30, 0xD0, 0x37, 0xF4,
+      0xD2, 0x46, 0x00, 0x64, 0xFC,
+      (uint8_t)(0xB0 | (vibePattern & 0x0F))
+  };
+  sendPayload(data, sizeof(data));
+}
+
+void broadcastParkCrossFade() {
+  // E9 11 Park Cross-Fade microcode array
+  const uint8_t data[] = {0xE1, 0x00, 0xE9, 0x11, 0x00, 0x6F, 0x0F, 0x56,
+                          0x48, 0x58, 0xF4, 0x48, 0x82, 0xD1, 0x46, 0x02,
+                          0x08, 0xD0, 0x65, 0x00, 0xB0};
   sendPayload(data, sizeof(data));
 }
 

@@ -1,0 +1,16 @@
+# PlatformIO build directories across all projects
+**/.pio/
+**/.pioenvs/
+**/.piolibdeps/
+
+# IDE files
+**/.vscode/
+
+# Python cache files
+**/__pycache__/
+*.pyc
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store

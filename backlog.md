@@ -5,6 +5,10 @@
 - [ ] motion sensor
 - [ ] i2c battery info
 - [ ] battery sweep on start
+- [ ] RSSI filter threshold (-90 dBm)
+- [ ] General packet deduplication window (2.5s)
+- [ ] Custom trigger cooldown (4.0s)
+- [ ] Statue beacon cooldown (30.0s)
 
 ## v2.0 - Advanced Features
 - [ ] esp now to sync ears with master slave switching to keep battery even

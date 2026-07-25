@@ -111,8 +111,9 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             return;
         }
 
-        // 2. FAB 50 STATUE BEACON DETECTION (0xC4 Header at payload[0] or payload[2])
-        if ((payload[0] == 0xC4 && payload[1] == 0x10) || (payload[2] == 0xC4 && payload[3] == 0x10)) {
+        // 2. FAB 50 STATUE BEACON DETECTION (0xC4 Header - C4 10 or C4 15)
+        if ((payload[0] == 0xC4 && (payload[1] == 0x10 || payload[1] == 0x15)) || 
+            (payload[2] == 0xC4 && (payload[3] == 0x10 || payload[3] == 0x15))) {
             int offset = (payload[0] == 0xC4) ? 0 : 2;
             if (copyLen >= (offset + 17)) {
                 statueIdStr[0] = (char)payload[offset + 15];
@@ -126,7 +127,7 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             receivedCommandType = 0xC4;
             lastShowSyncTime = now;
             disneyDeviceFound = true;
-            Serial.printf("\n🗿 [COM7 RX] FAB 50 STATUE BEACON DETECTED! Statue ID: %s\n", statueIdStr);
+            Serial.printf("\n🗿 [COM7 RX] FAB 50 STATUE BEACON DETECTED! Sub-type: C4 %02X | Statue ID: %s\n", payload[offset + 1], statueIdStr);
             return;
         }
 
@@ -183,14 +184,15 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             // CASE 3: Single Direct 6-bit RGB Color (E9 08) - Length >= 13
             else if (showCmd == 0x08 && len >= 13) {
                 parseDisneyTimingByte(payload[7]);
+                bool isStrobe = (payload[10] & 0x80) || (payload[11] & 0x80) || (payload[12] & 0x80);
                 showR1 = (payload[10] & 0x7E) << 1;
                 showG1 = (payload[11] & 0x7E) << 1;
                 showB1 = (payload[12] & 0x7E) << 1;
                 dynamicVibePattern = (len >= 14) ? (payload[13] & 0x0F) : 0x0B;
-                receivedCommandType = 0x08;
+                receivedCommandType = isStrobe ? 0x0E : 0x08;
                 lastShowSyncTime = now;
                 disneyDeviceFound = true;
-                Serial.printf("   🎨 Mode: Direct 6-bit RGB [%d, %d, %d]\n", showR1, showG1, showB1);
+                Serial.printf("   🎨 Mode: Direct 6-bit RGB [%d, %d, %d] (Strobe: %s)\n", showR1, showG1, showB1, isStrobe ? "YES" : "NO");
             } 
 
             // CASE 3B: 5-Color Ring Palette (E9 09) - Length >= 14
@@ -230,13 +232,18 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
             // CASE 4B: Official Park Show Microcode (E9 0C)
             else if (showCmd == 0x0C) {
                 receivedCommandType = 0x0C;
-                if (len >= 16 && (payload[5] == 0xEF || payload[15] == 0x95)) {
+                uint8_t lastByte = payload[len - 1];
+                if (len >= 16 && payload[5] == 0xEF) {
                     dynamicVibePattern = 0x07; // Continuous rumble
-                    showR1 = 255; showG1 = 90; showB1 = 0; // Orange
+                    showR1 = 255; showG1 = 90; showB1 = 0; // Orange Alert
                     Serial.println("   🎨 Mode: Park Show Microcode - Orange Alert Strobe");
+                } else if (len >= 16 && lastByte == 0x95) {
+                    dynamicVibePattern = 0x0A; // Sharp alert
+                    showR1 = 255; showG1 = 255; showB1 = 255; // White Strobe
+                    Serial.println("   🎨 Mode: Park Show Microcode - White Lightning Strobe");
                 } else {
                     dynamicVibePattern = 0x01; // Quick tick
-                    showR1 = 0; showG1 = 255; showB1 = 255;
+                    showR1 = 0; showG1 = 255; showB1 = 255; // Rainbow
                     Serial.println("   🎨 Mode: Park Show Microcode - Taste The Rainbow");
                 }
                 lastShowSyncTime = now;
@@ -278,18 +285,20 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 
             // CASE 6: Wave Pulse (E9 12) - Length >= 11
             else if (showCmd == 0x12 && len >= 11) {
+                parseDisneyTimingByte(payload[7]);
                 uint8_t innerColorIdx = payload[9] & 0x1F;
-                uint8_t outerColorIdx = (len >= 12) ? (payload[10] & 0x1F) : innerColorIdx;
+                uint8_t outerColorIdx = (len >= 13) ? (payload[11] & 0x1F) : innerColorIdx;
                 CRGB col1 = DISNEY_PALETTE[innerColorIdx];
                 CRGB col2 = DISNEY_PALETTE[outerColorIdx];
                 showR1 = col1.r; showG1 = col1.g; showB1 = col1.b;
                 showR2 = col2.r; showG2 = col2.g; showB2 = col2.b;
-                dynamicVibePattern = (len >= 13) ? (payload[11] & 0x0F) : 0x0B;
+                dynamicVibePattern = (len >= 14) ? (payload[len - 1] & 0x0F) : 0x0B;
                 receivedCommandType = 0x12;
                 lastShowSyncTime = now;
                 disneyDeviceFound = true;
-                Serial.printf("   🎨 Mode: Wave Pulse [Idx1: %d (%s), Idx2: %d (%s)]\n", 
-                              innerColorIdx, DISNEY_PALETTE_NAMES[innerColorIdx], outerColorIdx, DISNEY_PALETTE_NAMES[outerColorIdx]);
+                Serial.printf("   🎨 Mode: Wave Pulse [Idx1: %d (%s), Idx2: %d (%s)] | Timing 0x%02X (AlwaysOn:%s, On:%.1fs, Fade:%.1fs)\n", 
+                              innerColorIdx, DISNEY_PALETTE_NAMES[innerColorIdx], outerColorIdx, DISNEY_PALETTE_NAMES[outerColorIdx],
+                              payload[7], decodedAlwaysOn ? "YES" : "NO", decodedOnTimeSec, decodedFadeTimeSec);
             }
 
             // CASE 7: Unknown / Unhandled Show Packet Fallback
@@ -594,13 +603,23 @@ void executeDynamicShowSync() {
         }
     }
     else if (receivedCommandType == 0x0C) {
-        // 🌈 PARK SHOW MICROCODE: Full 29s show spectrum or Orange Alert
+        // 🌈 PARK SHOW MICROCODE: Full 29s show spectrum, Orange Alert, or White Strobe
         if (showR1 == 255 && showG1 == 90 && showB1 == 0) {
+            // Orange Alert
             for (int f = 0; f < 30; f++) {
                 fill_solid(leds, NUM_PIXELS, CRGB(255, 90, 0));
                 FastLED.show(); delay(80);
                 fill_solid(leds, NUM_PIXELS, CRGB::Black);
                 FastLED.show(); delay(80);
+            }
+        } else if (showR1 == 255 && showG1 == 255 && showB1 == 255) {
+            // White Lightning Strobe
+            for (int f = 0; f < 35; f++) {
+                fill_solid(leds, NUM_PIXELS, CRGB::White);
+                FastLED.setBrightness(255);
+                FastLED.show(); delay(50);
+                fill_solid(leds, NUM_PIXELS, CRGB::Black);
+                FastLED.show(); delay(50);
             }
         } else {
             unsigned long startTime = millis();
@@ -652,13 +671,43 @@ void executeDynamicShowSync() {
         }
     }
     else if (receivedCommandType == 0x12) {
-        // 🌊 WAVE PULSE: 5 seconds of smooth gradient wave
-        for (int step = 0; step < 200; step++) {
-            uint8_t blendRatio = beatsin8(30, 0, 255);
-            CRGB blendedCol = blend(activeShowColor1, activeShowColor2, blendRatio);
-            fill_solid(leds, NUM_PIXELS, blendedCol);
-            FastLED.show();
-            delay(25);
+        // 🌊 WAVE PULSE: MagicBand+ animation replica (Dynamic timing byte sync)
+        // Color 1 (Purple) base with Color 2 (Red) spinning ring & center pulse cutout
+        int half = NUM_PIXELS / 2; // 16 pixels per ear
+        unsigned long animStart = millis();
+        unsigned long targetDurationMs = (unsigned long)(decodedOnTimeSec * 1000.0f);
+        if (targetDurationMs < 2000) targetDurationMs = 14000; // Default safety fallback (14.0s)
+        
+        int step = 0;
+        while (millis() - animStart < targetDurationMs) {
+            int spinPos = step % half;
+            
+            // Pulse Beat (every 10 steps): Color 1 turns OFF while Color 2 flashes
+            if (step % 10 == 0) {
+                fill_solid(leds, NUM_PIXELS, CRGB::Black); // Color 1 (Purple) turns off
+                // Center LEDs of each ear flash Color 2 (Red)
+                for (int e = 0; e < 2; e++) {
+                    int offset = e * half;
+                    for (int c = 5; c < 11; c++) {
+                        leds[offset + c] = activeShowColor2;
+                    }
+                }
+                FastLED.show();
+                delay(90);
+            } else {
+                // Normal frame: Color 1 base with Color 2 chaser
+                fill_solid(leds, NUM_PIXELS, activeShowColor1);
+                
+                // Color 2 dot spinning around both ear rings
+                leds[spinPos] = activeShowColor2;
+                leds[(spinPos + 1) % half] = activeShowColor2;
+                leds[half + spinPos] = activeShowColor2;
+                leds[half + ((spinPos + 1) % half)] = activeShowColor2;
+                
+                FastLED.show();
+                delay(35);
+            }
+            step++;
         }
     }
     else {

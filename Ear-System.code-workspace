@@ -1,0 +1,56 @@
+{
+	"folders": [
+		{
+			"name": "BLE Transmitter",
+			"path": "BLE Transmitter"
+		},
+		{
+			"name": "Ears Receiver",
+			"path": "ears"
+		}
+	],
+	"settings": {
+		"platformio-ide.activeState": true
+	},
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "Monitor BLE Transmitter (COM8)",
+				"type": "shell",
+				"command": "pio device monitor",
+				"options": {
+					"cwd": "${workspaceFolder:BLE Transmitter}"
+				},
+				"problemMatcher": [],
+				"presentation": {
+					"panel": "dedicated",
+					"group": "monitors",
+					"focus": false
+				}
+			},
+			{
+				"label": "Monitor Ears Receiver (COM7)",
+				"type": "shell",
+				"command": "pio device monitor",
+				"options": {
+					"cwd": "${workspaceFolder:Ears Receiver}"
+				},
+				"problemMatcher": [],
+				"presentation": {
+					"panel": "dedicated",
+					"group": "monitors",
+					"focus": false
+				}
+			},
+			{
+				"label": "Monitor Both Devices",
+				"dependsOn": [
+					"Monitor BLE Transmitter (COM8)",
+					"Monitor Ears Receiver (COM7)"
+				],
+				"problemMatcher": []
+			}
+		]
+	}
+}
