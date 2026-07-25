@@ -9,6 +9,7 @@
 - [ ] General packet deduplication window (2.5s)
 - [ ] Custom trigger cooldown (4.0s)
 - [ ] Statue beacon cooldown (30.0s)
+- [ ] Enclosure design: Add micro pinholes aligned with IP5310 4-SMD battery LEDs for external charge level visibility
 
 ## v2.0 - Advanced Features
 - [ ] esp now to sync ears with master slave switching to keep battery even
