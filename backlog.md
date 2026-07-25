@@ -4,7 +4,7 @@
 ## v1.1 - Enhancements
 - [ ] motion sensor
 - [ ] i2c battery info
-- [ ] battery sweep on start
+- [ ] battery sweep on start (2x 10k resistor divider to ADC pin for LiPo B+ voltage monitoring)
 - [ ] RSSI filter threshold (-90 dBm)
 - [ ] General packet deduplication window (2.5s)
 - [ ] Custom trigger cooldown (4.0s)
