@@ -2,7 +2,7 @@
 > NOTE: Features in this file are NOT part of the current build milestone.
 
 ## v1.1 - Enhancements
-- [x] motion sensor (LIS3DSH I2C shake trigger & animation mode switching)
+- [ ] LIS3DSH motion sensor & haptic motor hardware integration (software code ready; hardware deferred to v1.1 enclosure revision)
 - [ ] i2c battery info
 - [ ] battery sweep on start (2x 10k resistor divider to ADC pin for LiPo B+ voltage monitoring)
 - [ ] RSSI filter threshold (-90 dBm)
