@@ -10,6 +10,7 @@
 - [ ] Custom trigger cooldown (4.0s)
 - [ ] Statue beacon cooldown (30.0s)
 - [ ] Enclosure design: Add micro pinholes aligned with IP5310 4-SMD battery LEDs for external charge level visibility
+- [ ] Enclosure design: Add 3.0mm pass-through opening for LED strip wires on bottom-left of inner mounting ring
 - [ ] Battery Optimization (LIS3DSH 25Hz ODR, 100ms polling interval, Light Sleep between BLE scans, 70% FastLED brightness cap)
 
 ## v2.0 - Advanced Features
