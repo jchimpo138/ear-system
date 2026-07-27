@@ -18,8 +18,15 @@
 - [ ] Enclosure design: Add open wire channel / path off IP5310 board for LiPo battery wiring (B+ / B-)
 - [ ] Battery Optimization (LIS3DSH 25Hz ODR, 100ms polling interval, Light Sleep between BLE scans, 70% FastLED brightness cap)
 
-## v2.0 - Advanced Features
-- [ ] esp now to sync ears with master slave switching to keep battery even
-- [ ] Mulit Power Modes (idle, active, show mode, deep sleep)
+## v2.0 - Advanced Features & Custom PCB Architecture
+- [ ] Custom All-in-One PCB: Nordic nRF52840 SoC (< 5mA active BLE RX, 1.5µA System OFF deep sleep)
+- [ ] Custom All-in-One PCB: Fast LiPo Charger (TI BQ25606 / 1.5A–2.0A steady 5V CC/CV charging)
+- [ ] Custom All-in-One PCB: Stabilized 5V Output (TPS61023 Synchronous Boost Converter with EN control)
+- [ ] Custom All-in-One PCB: Real-time System Power Monitor (INA219 / INA226 I2C current & power meter)
+- [ ] Custom All-in-One PCB: Fuel Gauge Battery Monitor (MAX17048 I2C percentage & voltage sensor)
+- [ ] Custom All-in-One PCB: PWM Haptic Motor Driver (SI2302 N-channel MOSFET)
+- [ ] Custom All-in-One PCB: Integrated 3-Axis Motion Sensor (LIS3DSH / BMI270 with INT1 wake interrupt)
+- [ ] esp now / BLE sync between ears with master-slave power balancing
+- [ ] Multi Power Modes (idle, active, show mode, deep sleep)
 - [ ] motion control for sleep and wake up
 - [ ] wave register for beacons
