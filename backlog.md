@@ -12,6 +12,7 @@
 - [ ] Enclosure design: Add micro pinholes aligned with IP5310 4-SMD battery LEDs for external charge level visibility
 - [ ] Enclosure design: Add 3.0mm pass-through opening for LED strip wires on bottom-left of inner mounting ring
 - [ ] Enclosure design: Add retention clips / tabs to securely hold down the 503450 LiPo battery
+- [ ] Enclosure design: Extend ESP32-S3 SuperMini mounting tray/pocket slightly longer on the long side for a clean fit
 - [ ] Battery Optimization (LIS3DSH 25Hz ODR, 100ms polling interval, Light Sleep between BLE scans, 70% FastLED brightness cap)
 
 ## v2.0 - Advanced Features
