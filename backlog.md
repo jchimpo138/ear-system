@@ -20,7 +20,7 @@
 
 ## v2.0 - Advanced Features & Custom PCB Architecture
 - [ ] Custom All-in-One PCB: Nordic nRF52840 SoC (< 5mA active BLE RX, 1.5µA System OFF deep sleep)
-- [ ] Custom All-in-One PCB: Safe LiPo Charger (TI BQ25606 / Max 1C charge rate limit: 500mA for 500mAh cell)
+- [ ] Custom All-in-One PCB: Safe 500mA LiPo Charger (MCP73831 / TI BQ25606 programmed to strict 500mA 1C MAX charge rate for 500mAh cell)
 - [ ] Custom All-in-One PCB: Stabilized 5V Output (TPS61023 Synchronous Boost Converter with EN control)
 - [ ] Custom All-in-One PCB: Real-time System Power Monitor (INA219 / INA226 I2C current & power meter)
 - [ ] Custom All-in-One PCB: Fuel Gauge Battery Monitor (MAX17048 I2C percentage & voltage sensor)
