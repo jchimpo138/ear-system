@@ -1,4 +1,4 @@
-# v2.0 Custom All-in-One Ear PCB Architecture (KiCad 8)
+# v2.0 Custom All-in-One Ear PCB Architecture (KiCad 10)
 
 > **Overview:** Universal 25mm–30mm Circular All-in-One Custom PCB for Disney Interactive Ear Receiver Wearables.
 
