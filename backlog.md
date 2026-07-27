@@ -14,6 +14,7 @@
 - [ ] Enclosure design: Add retention clips / tabs to securely hold down the 503450 LiPo battery
 - [ ] Enclosure design: Extend ESP32-S3 SuperMini mounting tray/pocket slightly longer on the long side for a clean fit
 - [ ] Enclosure design: Shift ESP32-S3 SuperMini holder to the left to clear room for the inner LED channel path
+- [ ] Enclosure design: Add open wire channel / path off IP5310 board for LiPo battery wiring (B+ / B-)
 - [ ] Battery Optimization (LIS3DSH 25Hz ODR, 100ms polling interval, Light Sleep between BLE scans, 70% FastLED brightness cap)
 
 ## v2.0 - Advanced Features
