@@ -9,7 +9,8 @@
 - [ ] General packet deduplication window (2.5s)
 - [ ] Custom trigger cooldown (4.0s)
 - [ ] Statue beacon cooldown (30.0s)
-- [ ] Enclosure design: Add micro pinholes aligned with IP5310 4-SMD battery LEDs for external charge level visibility
+- [ ] Hardware: Solder wire tap to IP5310 KEY button pads for external power ON/OFF tactile switch
+- [ ] Enclosure design: Add 3D-printed 4-cell anti-bleed light baffle / divider panel with clear PLA light pipes for IP5310 battery status LEDs
 - [ ] Enclosure design: Add 3.0mm pass-through opening for LED strip wires on bottom-left of inner mounting ring
 - [ ] Enclosure design: Add retention clips / tabs to securely hold down the 503450 LiPo battery
 - [ ] Enclosure design: Extend ESP32-S3 SuperMini mounting tray/pocket slightly longer on the long side for a clean fit
