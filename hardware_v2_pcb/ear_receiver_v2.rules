@@ -1,0 +1,173 @@
+
+(rules PCB ear_receiver_v2.dsn
+  (snap_angle 
+    fortyfive_degree
+  )
+  (rule
+    (width 200.0)
+    (clearance 150.0)
+    (clearance 100.0 (type smd_to_turn_gap))
+    (clearance 37.6 (type smd))
+    (clearance 150.0 (type "kicad_default"))
+    (clearance 150.0 (type +BATT,Default))
+    (clearance 150.0 (type "I2C_SCL,Default"))
+    (clearance 150.0 (type "I2C_SDA,Default"))
+    (clearance 150.0 (type VBUS,Default))
+    (clearance 150.0 (type "MOTION_INT,Default"))
+    (clearance 150.0 (type GND,Default))
+  )
+  (padstack "Via[0-1]_600:300_um"
+    (shape
+      (circle F.Cu 600.0 0.0 0.0)
+    )
+    (shape
+      (circle B.Cu 600.0 0.0 0.0)
+    )
+    (attach off)
+  )
+  (via 
+    "Via[0-1]_600:300_um" "Via[0-1]_600:300_um" default
+  )
+  (via 
+    "Via[0-1]_600:300_um-kicad_default" "Via[0-1]_600:300_um" "kicad_default"
+  )
+  (via 
+    "Via[0-1]_600:300_um-+BATT,Default" "Via[0-1]_600:300_um" +BATT,Default
+  )
+  (via 
+    "Via[0-1]_600:300_um-I2C_SCL,Default" "Via[0-1]_600:300_um" "I2C_SCL,Default"
+  )
+  (via 
+    "Via[0-1]_600:300_um-I2C_SDA,Default" "Via[0-1]_600:300_um" "I2C_SDA,Default"
+  )
+  (via 
+    "Via[0-1]_600:300_um-VBUS,Default" "Via[0-1]_600:300_um" VBUS,Default
+  )
+  (via 
+    "Via[0-1]_600:300_um-MOTION_INT,Default" "Via[0-1]_600:300_um" "MOTION_INT,Default"
+  )
+  (via 
+    "Via[0-1]_600:300_um-GND,Default" "Via[0-1]_600:300_um" GND,Default
+  )
+  (via_rule
+    default "Via[0-1]_600:300_um"
+  )
+  (via_rule
+    "kicad_default" "Via[0-1]_600:300_um-kicad_default"
+  )
+  (via_rule
+    +BATT,Default "Via[0-1]_600:300_um-+BATT,Default"
+  )
+  (via_rule
+    "I2C_SCL,Default" "Via[0-1]_600:300_um-I2C_SCL,Default"
+  )
+  (via_rule
+    "I2C_SDA,Default" "Via[0-1]_600:300_um-I2C_SDA,Default"
+  )
+  (via_rule
+    VBUS,Default "Via[0-1]_600:300_um-VBUS,Default"
+  )
+  (via_rule
+    "MOTION_INT,Default" "Via[0-1]_600:300_um-MOTION_INT,Default"
+  )
+  (via_rule
+    GND,Default "Via[0-1]_600:300_um-GND,Default"
+  )
+  (class default
+    (clearance_class default)
+    (via_rule default)
+    (rule
+      (width 200.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+  (class "kicad_default"
+    "Net-(D1-A)" "Net-(J1-CC1)" "unconnected-(J1-SBU1-PadA8)" "Net-(J1-CC2)" "unconnected-(J1-SBU2-PadB8)" /+5v "/LED_DATA" "Net-(U2-PROG)"
+    "Net-(Q1-G)" "/HAPTIC_PWM" "Net-(U3-SW)" "/BTN_KEY" "unconnected-(U1-AIN7{slash}P0.31-PadA8)" "unconnected-(U1-AIN5{slash}P0.29-PadA10)" "unconnected-(U1-AIN0{slash}P0.02-PadA12)" "unconnected-(U1-P1.13-PadA16)"
+    "unconnected-(U1-DEC2-PadA18)" "unconnected-(U1-XC2-PadA23)" "unconnected-(U1-SWDCLK-PadAA24)" "unconnected-(U1-DCCH-PadAB2)" "unconnected-(U1-DECUSB-PadAC5)" "unconnected-(U1-P0.14-PadAC9)" "unconnected-(U1-P0.16-PadAC11)" "unconnected-(U1-P0.18{slash}~{RESET}-PadAC13)"
+    "unconnected-(U1-P0.19-PadAC15)" "unconnected-(U1-P0.21-PadAC17)" "unconnected-(U1-P0.23-PadAC19)" "unconnected-(U1-P0.25-PadAC21)" "unconnected-(U1-SWDIO-PadAC24)" "unconnected-(U1-P0.15-PadAD10)" "/BOOST_EN" "unconnected-(U1-P0.22-PadAD18)"
+    "unconnected-(U1-P0.24-PadAD20)" "unconnected-(U1-TRACEDATA0{slash}P1.00-PadAD22)" "unconnected-(U1-AIN6{slash}P0.30-PadB9)" "unconnected-(U1-AIN4{slash}P0.28-PadB11)" "unconnected-(U1-AIN1{slash}P0.03-PadB13)" "unconnected-(U1-P1.14-PadB15)" "unconnected-(U1-P1.11-PadB19)" "unconnected-(U1-XC1-PadB24)"
+    "unconnected-(U1-DEC1-PadC1)" "unconnected-(U1-XL1{slash}P0.00-PadD2)" "unconnected-(U1-DEC3-PadD23)" "unconnected-(U1-DEC6-PadE24)" "unconnected-(U1-XL2{slash}P0.01-PadF2)" "unconnected-(U1-P0.26-PadG1)" "unconnected-(U1-P0.27-PadH2)" "unconnected-(U1-ANT-PadH23)"
+    "unconnected-(U1-AIN2{slash}P0.04-PadJ1)" "unconnected-(U1-NFC2{slash}P0.10-PadJ24)" "unconnected-(U1-AIN3{slash}P0.05-PadK2)" "unconnected-(U1-P0.06-PadL1)" "unconnected-(U1-NFC1{slash}P0.09-PadL24)" "unconnected-(U1-TRACECLK{slash}P0.07-PadM2)" "unconnected-(U1-P0.08-PadN1)" "unconnected-(U1-DEC5-PadN24)"
+    "unconnected-(U1-P1.07-PadP23)" "unconnected-(U1-TRACEDATA3{slash}P1.09-PadR1)" "unconnected-(U1-TRACEDATA2{slash}P0.11-PadT2)" "unconnected-(U1-P1.05-PadT23)" "unconnected-(U1-TRACEDATA1{slash}P0.12-PadU1)" "unconnected-(U1-P1.04-PadU24)" "unconnected-(U1-P1.03-PadV23)" "unconnected-(U1-P1.02-PadW24)"
+    "unconnected-(U1-P1.01-PadY23)" "unconnected-(U4-TH-Pad1)" "unconnected-(U4-NC-Pad2)" "unconnected-(U4-SW-Pad3)" "unconnected-(U4-NC-Pad4)" "unconnected-(U4-NC-Pad5)" "unconnected-(U4-CSN-Pad7)" "unconnected-(U4-CSPL-Pad9)"
+    "unconnected-(U4-REG-Pad11)" "unconnected-(U4-ALRT-Pad12)" "unconnected-(U6-NC-Pad2)" "unconnected-(U6-NC-Pad3)" "unconnected-(U6-INT2-Pad9)" "unconnected-(U6-ADC3-Pad13)" "unconnected-(U6-ADC2-Pad15)" "unconnected-(U6-ADC1-Pad16)"
+    /VSYS "Net-(U1-DEC4)" "/USB_DP" "/USB_DN" "Net-(L2-Pad1)" "Net-(U1-DCC)" "/CHG_STAT" +3.3V
+    (clearance_class "kicad_default")
+    (via_rule "kicad_default")
+    (rule
+      (width 200.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+  (class +BATT,Default
+    +BATT
+    (clearance_class +BATT,Default)
+    (via_rule +BATT,Default)
+    (rule
+      (width 200.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+  (class "I2C_SCL,Default"
+    "/I2C_SCL"
+    (clearance_class "I2C_SCL,Default")
+    (via_rule "I2C_SCL,Default")
+    (rule
+      (width 200.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+  (class "I2C_SDA,Default"
+    "/I2C_SDA"
+    (clearance_class "I2C_SDA,Default")
+    (via_rule "I2C_SDA,Default")
+    (rule
+      (width 200.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+  (class VBUS,Default
+    /VBUS
+    (clearance_class VBUS,Default)
+    (via_rule VBUS,Default)
+    (rule
+      (width 200.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+  (class "MOTION_INT,Default"
+    "/MOTION_INT"
+    (clearance_class "MOTION_INT,Default")
+    (via_rule "MOTION_INT,Default")
+    (rule
+      (width 200.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+  (class GND,Default
+    GND
+    (clearance_class GND,Default)
+    (via_rule GND,Default)
+    (rule
+      (width 200.0)
+    )
+    (circuit 
+      (use_layer F.Cu B.Cu)
+    )
+  )
+)

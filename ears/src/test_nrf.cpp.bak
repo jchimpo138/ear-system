@@ -1,0 +1,32 @@
+#include <Arduino.h>
+#include <FastLED.h>
+
+#define LED_PIN     6      // P0.06 (Slot C2)
+#define NUM_LEDS    8
+#define LED_TYPE    WS2812B
+#define COLOR_ORDER GRB
+
+CRGB leds[NUM_LEDS];
+
+void setup() {
+  Serial.begin(115200);
+  FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(40);
+}
+
+void loop() {
+  // Red pulse test pattern
+  fill_solid(leds, NUM_LEDS, CRGB::Red);
+  FastLED.show();
+  delay(500);
+
+  fill_solid(leds, NUM_LEDS, CRGB::Blue);
+  FastLED.show();
+  delay(500);
+
+  fill_solid(leds, NUM_LEDS, CRGB::Green);
+  FastLED.show();
+  delay(500);
+
+  Serial.println("nRF52840 Test Blink Active!");
+}

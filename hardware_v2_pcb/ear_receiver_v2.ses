@@ -1,0 +1,171 @@
+(session "ear_receiver_v2.ses"
+  (base_design "ear_receiver_v2.dsn")
+  (placement
+    (resolution um 10)
+    (component "Package_TO_SOT_SMD:SOT-23-8"
+      (place U5 1802250 -991125 front 270)
+    )
+    (component "Connector_JST:JST_PH_S2B-PH-K_1x02_P2.00mm_Horizontal"
+      (place J3 1850000 -1000000 front 90)
+    )
+    (component "Package_DFN_QFN:TDFN-14-1EP_3x3mm_P0.4mm_EP1.78x2.35mm"
+      (place U4 1244450 -1044100 front 0)
+    )
+    (component "Package_TO_SOT_SMD:SOT-23-5"
+      (place U2 1848625 -1150500 front 0)
+    )
+    (component "Package_DFN_QFN:Nordic_AQFN-73-1EP_7x7mm_P0.5mm"
+      (place U1 1320000 -1092500 front 0)
+    )
+    (component "Inductor_SMD:L_0402_1005Metric"
+      (place L2 1300000 -1037350 front 90)
+    )
+    (component "Diode_SMD:D_SOD-123"
+      (place D1 1746500 -970000 front 0)
+    )
+    (component "Button_Switch_SMD:SW_SPST_B3U-3000P-B"
+      (place SW1 1190249 -1146074 front 115)
+    )
+    (component "Connector_USB:USB_C_Receptacle_GCT_USB4105-xx-A_16P_TopMnt_Horizontal"
+      (place J1 1760000 -1250000 front 340)
+    )
+    (component "Package_DFN_QFN:Texas_RWU0007A_VQFN-7_2x2mm_P0.5mm"
+      (place U3 1360250 -1242500 front 0)
+    )
+    (component "Capacitor_SMD:C_0603_1608Metric"
+      (place C3 1232250 -1180000 front 0)
+      (place C5 1347750 -1210000 front 0)
+      (place C2 1860000 -1090000 front 0)
+      (place C1 1827750 -1090000 front 0)
+      (place C4 1322250 -1170000 front 0)
+    )
+    (component "Capacitor_SMD:C_0603_1608Metric::1"
+      (place C6 1322250 -1040000 front 180)
+    )
+    (component "Inductor_SMD:L_0402_1005Metric::1"
+      (place L3 1290000 -1037350 front 90)
+    )
+    (component "Resistor_SMD:R_0603_1608Metric"
+      (place R3 1901750 -1090000 front 0)
+      (place R2 1281750 -1000000 front 0)
+      (place R4 1801750 -1140000 front 0)
+      (place R1 1321750 -1000000 front 0)
+      (place R5 1761750 -1170000 front 0)
+      (place R7 1781750 -1080000 front 0)
+      (place R8 1361750 -1040000 front 0)
+      (place R9 1361750 -1000000 front 0)
+    )
+    (component "Resistor_SMD:R_1206_3216Metric"
+      (place R6 1794625 -1030000 front 0)
+    )
+    (component "Package_TO_SOT_SMD:SOT-23"
+      (place Q1 1160625 -990000 front 0)
+    )
+    (component "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+      (place M1 1200000 -964600 front 0)
+    )
+    (component "Inductor_SMD:L_0603_1608Metric"
+      (place L1 1252125 -1150000 front 0)
+    )
+    (component "Package_LGA:LGA-16_3x3mm_P0.5mm_LayoutBorder3x5y"
+      (place U6 1251150 -1097750 front 0)
+    )
+    (component "Connector_JST:JST_PH_S3B-PH-K_1x03_P2.00mm_Horizontal"
+      (place J2 1291218 -1190429 front 300)
+    )
+  )
+  (was_is
+  )
+  (routes 
+    (resolution um 10)
+    (parser
+      (host_cad "KiCad's Pcbnew")
+      (host_version "10.0.5")
+    )
+    (library_out 
+      (padstack "Via[0-1]_600:300_um"
+        (shape
+          (circle F.Cu 6000 0 0)
+        )
+        (shape
+          (circle B.Cu 6000 0 0)
+        )
+        (attach off)
+      )
+      (padstack "Via[0-1]_600:300_um"
+        (shape
+          (circle F.Cu 6000 0 0)
+        )
+        (shape
+          (circle B.Cu 6000 0 0)
+        )
+        (attach off)
+      )
+      (padstack "Via[0-1]_600:300_um"
+        (shape
+          (circle F.Cu 6000 0 0)
+        )
+        (shape
+          (circle B.Cu 6000 0 0)
+        )
+        (attach off)
+      )
+      (padstack "Via[0-1]_600:300_um"
+        (shape
+          (circle F.Cu 6000 0 0)
+        )
+        (shape
+          (circle B.Cu 6000 0 0)
+        )
+        (attach off)
+      )
+      (padstack "Via[0-1]_600:300_um"
+        (shape
+          (circle F.Cu 6000 0 0)
+        )
+        (shape
+          (circle B.Cu 6000 0 0)
+        )
+        (attach off)
+      )
+      (padstack "Via[0-1]_600:300_um"
+        (shape
+          (circle F.Cu 6000 0 0)
+        )
+        (shape
+          (circle B.Cu 6000 0 0)
+        )
+        (attach off)
+      )
+      (padstack "Via[0-1]_600:300_um"
+        (shape
+          (circle F.Cu 6000 0 0)
+        )
+        (shape
+          (circle B.Cu 6000 0 0)
+        )
+        (attach off)
+      )
+      (padstack "Via[0-1]_600:300_um"
+        (shape
+          (circle F.Cu 6000 0 0)
+        )
+        (shape
+          (circle B.Cu 6000 0 0)
+        )
+        (attach off)
+      )
+    )
+    (network_out 
+      (net +BATT
+        (wire
+          (path F.Cu 8000
+            1814000 -981750
+            1814000 -979750
+          )
+          (type protect)
+        )
+      )
+    )
+  )
+)
