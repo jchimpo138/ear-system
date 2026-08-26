@@ -260,6 +260,25 @@ volatile uint8_t showG2 = 0;
 volatile uint8_t showB2 = 255;
 volatile bool isDualColor = false;
 
+// How long the current show holds before expiring, per its own Timing Byte
+// (see PROTOCOL.md "Timing Byte Specification") instead of one fixed
+// cutoff for every command -- this is what makes ears hold-time match a
+// real MagicBand+'s, which varies per show (observed ~24-29s for a
+// TIME_VAL=15/scaler=0 command, not a blanket few seconds).
+volatile unsigned long currentShowDurationMs = 4000;
+volatile bool currentShowAlwaysOn = false;
+
+// Decodes a Disney show Timing Byte into (duration, always-on).
+// Bit7 ALWAYS_ON, Bit6 SCALER, Bits5-4 FADE_CODE (unused here), Bits3-0 TIME_VAL.
+// Duration = 3.1*TIME_VAL + 5.5 (scaler=1) or 1.5*TIME_VAL + 6.5 (scaler=0) seconds.
+void applyShowTiming(uint8_t timingByte) {
+  currentShowAlwaysOn = (timingByte & 0x80) != 0;
+  bool scaler = (timingByte & 0x40) != 0;
+  uint8_t timeVal = timingByte & 0x0F;
+  float durationSec = scaler ? (3.1f * timeVal + 5.5f) : (1.5f * timeVal + 6.5f);
+  currentShowDurationMs = (unsigned long)(durationSec * 1000.0f);
+}
+
 // --- CC 03 Wake-Ping Scan Boost ---
 // Per PROTOCOL.md: park infrastructure sends a 500ms "CC 03 00 00 00" wake
 // ping (25ms advertising interval) before the real 3000ms show payload
@@ -418,6 +437,57 @@ void executeDisneyMicrocode() {
       }
       step++;
     }
+  } else if (receivedCommandType == 0x11) {
+    // 🌈 PALETTE CROSS-FADE (Center Opposite Outer Ring, per emcot.txt's
+    // name for E9 11): confirmed against a real MagicBand+ -- two zones
+    // hold opposite colors and continuously swap back and forth (~1s per
+    // direction, smooth not a hard cut) for the whole show duration, not a
+    // single one-shot uniform blend across the strip like a plain
+    // cross-fade would be. Mapped onto our linear strip as two halves,
+    // matching the existing half-split convention used by 0x06/0x12.
+    // Recomputed fresh every call from millis() -- no blocking loop.
+    const float CROSSFADE_PERIOD_MS = 2000.0f; // ~1s each direction
+    float phase = sinf(2.0f * PI * (float)millis() / CROSSFADE_PERIOD_MS -
+                        PI / 2.0f);
+    float blendA = (phase + 1.0f) / 2.0f; // 0..1, smooth continuous oscillation
+
+    // Steepen the curve: hold each zone near-fully-saturated for the outer
+    // ~30% of each half-cycle and compress the actual color swap into the
+    // middle ~40%. A raw sine still spends a lot of perceptual time in the
+    // muddy, low-contrast midpoint blend (where zoneA/zoneB nearly match)
+    // -- that's what was reading as "barely any change" on the strip even
+    // though the underlying numbers were correct. This keeps the same ~1s
+    // per-direction timing but makes the flip read as a clear swap.
+    float steep = (blendA - 0.3f) / 0.4f;
+    if (steep < 0.0f) steep = 0.0f;
+    if (steep > 1.0f) steep = 1.0f;
+    blendA = steep * steep * (3.0f - 2.0f * steep); // smoothstep
+
+    // Boost output intensity for this effect specifically (independent of
+    // the global LED_BRIGHTNESS dimmer cap used elsewhere) since Disney
+    // show colors need to read as vivid/saturated to be noticeable at a
+    // glance, not just technically-correct.
+    const float XFADE_GAIN = 1.7f;
+    auto boost = [XFADE_GAIN](uint8_t v) -> uint8_t {
+      float g = v * XFADE_GAIN;
+      return (uint8_t)(g > 255.0f ? 255.0f : g);
+    };
+
+    uint8_t rA = boost(showR1 + (int16_t)((showR2 - showR1) * blendA));
+    uint8_t gA = boost(showG1 + (int16_t)((showG2 - showG1) * blendA));
+    uint8_t bA = boost(showB1 + (int16_t)((showB2 - showB1) * blendA));
+    uint8_t rB = boost(showR2 + (int16_t)((showR1 - showR2) * blendA));
+    uint8_t gB = boost(showG2 + (int16_t)((showG1 - showG2) * blendA));
+    uint8_t bB = boost(showB2 + (int16_t)((showB1 - showB2) * blendA));
+
+    int half = NUM_LEDS / 2;
+    for (int i = 0; i < half; i++) {
+      strip.setPixelColor(i, strip.Color(rA, gA, bA));
+    }
+    for (int i = half; i < NUM_LEDS; i++) {
+      strip.setPixelColor(i, strip.Color(rB, gB, bB));
+    }
+    strip.show();
   } else {
     // Standard Hold Display (0x05, 0x06, 0x08, 0x0B)
     if (isDualColor) {
@@ -587,8 +657,11 @@ void loop() {
   }
 #endif // HAS_BUTTON
 
-  // A BLE show that hasn't refreshed in >4s has ended.
-  if (disneyDeviceFound && (now - lastShowSyncTime > 4000)) {
+  // A show holds for its own decoded Timing Byte duration (ALWAYS_ON shows
+  // never expire on their own -- only a new command changes them), matching
+  // real MagicBand+ behavior instead of one fixed cutoff for every show.
+  if (disneyDeviceFound && !currentShowAlwaysOn &&
+      (now - lastShowSyncTime > currentShowDurationMs)) {
     disneyDeviceFound = false;
   }
 
@@ -796,6 +869,10 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
     isDualColor = false;
     lastShowSyncTime = now;
     disneyDeviceFound = true;
+    // No Timing Byte on this command type -- fixed default duration, set
+    // explicitly so it doesn't inherit a stale value from a prior E9 show.
+    currentShowDurationMs = 4000;
+    currentShowAlwaysOn = false;
     Serial.printf(
         "\n✨ [BLE RX] STARLIGHT BUBBLE WAND CAST! Palette Index: %d (%s)\n",
         wandColIdx, DISNEY_PALETTE_NAMES[wandColIdx]);
@@ -813,6 +890,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
     isDualColor = false;
     lastShowSyncTime = now;
     disneyDeviceFound = true;
+    // No Timing Byte on this command type either -- same fixed default.
+    currentShowDurationMs = 4000;
+    currentShowAlwaysOn = false;
     Serial.println("\n🗿 [BLE RX] FAB 50 STATUE BEACON DETECTED! (Gold)");
     return;
   }
@@ -828,6 +908,18 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
     uint8_t showCmd = payload[5];
     receivedCommandType = showCmd;
     const DisneyShowCommand *showInfo = getDisneyShowInfo(showCmd);
+
+    // Timing Byte sits at the same offset (payload[7], right after the 00
+    // spacer at payload[6]) across every E9 show command per PROTOCOL.md --
+    // decode it once here rather than per-command, so hold time actually
+    // matches what the packet specifies instead of one fixed cutoff for
+    // every show.
+    if (len >= 8) {
+      applyShowTiming(payload[7]);
+      Serial.printf("⏱️  [TIMING] byte=0x%02X -> %lums, alwaysOn=%s\n",
+                    payload[7], currentShowDurationMs,
+                    currentShowAlwaysOn ? "true" : "false");
+    }
 
     Serial.printf("\n[%lu ms] ✨ [BLE RX] DISNEY SHOW PACKET! Cmd: 0x%02X",
                   millis(), showCmd);
@@ -869,10 +961,17 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
                     DISNEY_PALETTE_NAMES[color2Idx]);
     }
     // 0x08: Raw RGB Color Command
-    else if (showCmd == 0x08 && len >= 10) {
-      showR1 = (payload[7] & 0x3F) << 2;
-      showG1 = (payload[8] & 0x3F) << 2;
-      showB1 = (payload[9] & 0x3F) << 2;
+    // Payload has a 2-byte D2 55 sub-header before the color bytes (see
+    // PROTOCOL.md / emcot.txt raw example 8301E100E908000ED2557C7C7CB0),
+    // which our old offsets (7,8,9) didn't account for -- they were reading
+    // the timing byte and the D2/55 signature bytes as if they were R/G/B.
+    // Real color bytes are at 10/11/12. Also corrected the 6-bit unpack:
+    // encoding is Byte = (Channel6bit & 0x3F) << 1, so the 8-bit value is
+    // (Byte & 0x7E) << 1, not (Byte & 0x3F) << 2 (off by one bit position).
+    else if (showCmd == 0x08 && len >= 13) {
+      showR1 = (payload[10] & 0x7E) << 1;
+      showG1 = (payload[11] & 0x7E) << 1;
+      showB1 = (payload[12] & 0x7E) << 1;
       isDualColor = false;
       lastShowSyncTime = now;
       disneyDeviceFound = true;
@@ -888,9 +987,13 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       Serial.println("   🎨 [Mode 4] High-Contrast Electric Blue & White Circle!");
     }
     // 0x09: 5-Color Palette Ring (Mode 7 on Transmitter)
-    else if (showCmd == 0x09 && len >= 12) {
+    // Same 2-byte sub-header issue as 0x08 (see note above): the 5 palette
+    // slots (TL,BL,BR,TR,C) start at offset 9, not 7 -- the old offset read
+    // the timing byte and 0x0F signature as the first two "colors" and
+    // missed the last two slots (TR, center) entirely.
+    else if (showCmd == 0x09 && len >= 14) {
       for (int s = 0; s < 5; s++) {
-        uint8_t cIdx = payload[7 + s] & 0x1F;
+        uint8_t cIdx = payload[9 + s] & 0x1F;
         CRGB col = DISNEY_PALETTE[cIdx];
         showColors5[s][0] = col.r;
         showColors5[s][1] = col.g;
@@ -921,6 +1024,26 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       disneyDeviceFound = true;
       Serial.printf("   🎨 [Mode 6] Wave Pulse! Colors: %s / %s\n",
                     DISNEY_PALETTE_NAMES[c1], DISNEY_PALETTE_NAMES[c2]);
+    }
+    // 0x11: Park Cross-Fade (e.g. Cyan to Pink) -- per emcot.txt "2 Palette
+    // Colors follow the 0F" marker byte at payload[8]; color1/color2 land
+    // at payload[9]/[10], same &0x1F palette-index convention as everywhere
+    // else. Actual blending happens in executeDisneyMicrocode() each frame,
+    // driven by elapsed time vs. currentShowDurationMs -- not a blocking
+    // delay()-loop, so it doesn't stall the button/BLE/scan-boost logic.
+    else if (showCmd == 0x11 && len >= 11) {
+      uint8_t c1 = payload[9] & 0x1F;
+      uint8_t c2 = payload[10] & 0x1F;
+      CRGB col1 = DISNEY_PALETTE[c1];
+      CRGB col2 = DISNEY_PALETTE[c2];
+      showR1 = col1.r; showG1 = col1.g; showB1 = col1.b;
+      showR2 = col2.r; showG2 = col2.g; showB2 = col2.b;
+      isDualColor = false;
+      lastShowSyncTime = now;
+      disneyDeviceFound = true;
+      Serial.printf("   🎨 [Cross-Fade] %s -> %s over %lums\n",
+                    DISNEY_PALETTE_NAMES[c1], DISNEY_PALETTE_NAMES[c2],
+                    currentShowDurationMs);
     }
     // Fallback: Any other valid show command
     else {
