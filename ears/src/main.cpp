@@ -1,71 +1,151 @@
 #include "DisneyBeacons.h"
 #include <Adafruit_NeoPixel.h>
 #include <Arduino.h>
+#include <LSM6DS3.h>
 #include <bluefruit.h>
 
-// --- Pin Definitions ---
-#define LED_PIN PIN_006     // P0.06 (NeoPixel Data)
-#define BUTTON_PIN PIN_017  // P0.17 (Manual / Mode Button)
-#define HAPTIC_PIN PIN_020  // P0.20 (Haptic Motor Output)
-#define BATTERY_PIN PIN_031 // P0.31 (AIN7 / Battery ADC)
+// Bring-up test: poll the onboard LSM6DS3TR-C accelerometer/gyro and print
+// readings, before committing to interrupt-driven motion wake. Takes over
+// setup()/loop() entirely -- highest-priority test mode, checked before
+// FET1_TOGGLE_TEST. The Seeed fork of this library already special-cases
+// this exact board (TARGET_SEEED_XIAO_NRF52840_SENSE): it redirects Wire to
+// the internal Wire1 bus and auto-powers PIN_LSM6DS3TR_C_POWER inside
+// begin(), so no manual pin/bus setup is needed here.
+#define IMU_POLL_TEST 0
+
+// --- Pin Definitions (Seeed XIAO nRF52840 Sense) ---
+#define FET1_GATE_PIN D0 // 5V LED rail switch (SSM3J328R gate via S8050 level-shifter)
+#define LED_PIN D2       // P0.28 (NeoPixel/SK6812 Data)
+
+// Bring-up test: rail-gated color cycle so the rail can be watched with a
+// meter. The rail is only powered while actively pushing pixel data (see
+// loop()) -- this is the zero-idle-drain behavior FET1 exists for.
+// Flip back to 0 to build the full production app instead.
+//
+// Pixel output goes through Adafruit_NeoPixel, not FastLED: FastLED's nRF52
+// clockless driver is confirmed broken on this exact board (hard-crashes on
+// .show(), confirmed via bisection here and documented upstream --
+// https://github.com/FastLED/FastLED/issues/1648,
+// https://github.com/FastLED/FastLED/issues/2061). Adafruit_NeoPixel is the
+// community-confirmed working driver for this board.
+#define FET1_TOGGLE_TEST 0
+
+// Each of these is independently wireable -- flip one on once its hardware
+// is actually connected, without needing the others wired too.
+#define HAS_BUTTON 1 // D3, momentary switch to GND (INPUT_PULLUP)
+#define HAS_HAPTIC 1 // D4, pre-built vibration motor driver module
+#define HAS_BATTERY_ADC 1
+
+#if HAS_BUTTON
+#define BUTTON_PIN D3
+#endif
+#if HAS_HAPTIC
+#define HAPTIC_PIN D4
+#endif
+#if HAS_BATTERY_ADC
+// The XIAO Sense has a built-in battery-sense circuit -- no external divider
+// needed. PIN_VBAT (P0.31, AIN7) and VBAT_ENABLE (P0.14) are already defined
+// by the board variant.
+//
+// VBAT_ENABLE is held permanently LOW (divider always connected) rather than
+// toggled around reads. The real hazard -- P0.31 getting pulled up through
+// the 1M resistor into the nRF52840's internal ESD clamp (~3.6V, right at
+// the GPIO absolute max) when VBAT_ENABLE sits HIGH -- depends only on BAT+
+// voltage, not on which charger put it there. This board's onboard BQ25101
+// charger (~CHG on P0.17) only engages when USB is plugged into the XIAO's
+// own port; the actual product charges through the IP5310 instead (see
+// CLAUDE.md), which never touches that pin at all -- so a charging-state
+// gate is blind to the real-world charging path and can't actually protect
+// against it. Holding the divider connected permanently costs ~2.3uA
+// continuously, negligible next to the 18650's own self-discharge.
+// https://wiki.seeedstudio.com/XIAO_BLE/ (FAQ Q3)
+#endif
+
 #define NUM_LEDS 31
 #define LED_BRIGHTNESS 120
 
-Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRBW + NEO_KHZ800);
+
+#if IMU_POLL_TEST
+LSM6DS3 myIMU(I2C_MODE, 0x6A); // per the library's own example for this board
+#endif
+
+// Shared with loop()'s rail-gating logic -- anything that toggles
+// FET1_GATE_PIN outside of loop() (e.g. runBatterySweepAnimation()) must
+// keep this in sync, or loop() and reality disagree about the rail state.
+bool railOn = false;
 
 // --- Haptic Feedback Helper ---
+#if HAS_HAPTIC
+// Motor is on the raw battery rail (~3.0-4.2V), rated for 3.0V/100mA. 80%
+// PWM duty brings the sustained average down near its rated point (e.g.
+// ~3.0V average at a 3.75V resting battery) instead of running it at full
+// rail voltage continuously. A brief full-power kick-start is still used
+// first, since the motor's ~2.3V start-voltage spec is too close to what
+// 80% duty alone would deliver at a low, near-depleted battery.
+#define HAPTIC_DUTY_PERCENT 80
+#define HAPTIC_KICKSTART_MS 40
+
+void hapticPulse(unsigned long durationMs) {
+  uint8_t sustainDuty = (uint8_t)((HAPTIC_DUTY_PERCENT * 255) / 100);
+  unsigned long kick = min(durationMs, (unsigned long)HAPTIC_KICKSTART_MS);
+
+  analogWrite(HAPTIC_PIN, 255); // full-power kick to overcome static friction
+  delay(kick);
+  if (durationMs > kick) {
+    analogWrite(HAPTIC_PIN, sustainDuty);
+    delay(durationMs - kick);
+  }
+  analogWrite(HAPTIC_PIN, 0);
+}
+
 void triggerHapticPattern(uint8_t patternCode) {
-  Serial.printf("📳 [HAPTIC] Triggering pattern: 0x%02X on pin P0.20\n", patternCode);
+  Serial.printf("📳 [HAPTIC] Triggering pattern: 0x%02X on D4 (P0.04)\n", patternCode);
   switch (patternCode) {
     case 0xFF: // 1-Second Full Power Test Pulse
-      digitalWrite(HAPTIC_PIN, HIGH);
-      delay(1000);
-      digitalWrite(HAPTIC_PIN, LOW);
+      hapticPulse(1000);
       break;
     case 0x01: // Single Tap (250ms)
-      digitalWrite(HAPTIC_PIN, HIGH);
-      delay(250);
-      digitalWrite(HAPTIC_PIN, LOW);
+      hapticPulse(250);
       break;
     case 0x02: // Double Tap (250ms / 150ms / 250ms)
-      digitalWrite(HAPTIC_PIN, HIGH); delay(250);
-      digitalWrite(HAPTIC_PIN, LOW);  delay(150);
-      digitalWrite(HAPTIC_PIN, HIGH); delay(250);
-      digitalWrite(HAPTIC_PIN, LOW);
+      hapticPulse(250);
+      delay(150);
+      hapticPulse(250);
       break;
     case 0x07: // Heavy Rumble (600ms)
-      digitalWrite(HAPTIC_PIN, HIGH);
-      delay(600);
-      digitalWrite(HAPTIC_PIN, LOW);
+      hapticPulse(600);
       break;
     case 0x0A: // Sharp Pulse
-      digitalWrite(HAPTIC_PIN, HIGH); delay(300);
-      digitalWrite(HAPTIC_PIN, LOW);  delay(100);
-      digitalWrite(HAPTIC_PIN, HIGH); delay(300);
-      digitalWrite(HAPTIC_PIN, LOW);
+      hapticPulse(300);
+      delay(100);
+      hapticPulse(300);
       break;
     case 0x0B: // Standard Pulse
     default:
-      digitalWrite(HAPTIC_PIN, HIGH);
-      delay(300);
-      digitalWrite(HAPTIC_PIN, LOW);
+      hapticPulse(300);
       break;
   }
 }
+#endif // HAS_HAPTIC
 
 // --- Battery Functions ---
+#if HAS_BATTERY_ADC
 static float filteredBatteryVolts = 0.0f;
 
+// VBAT_ENABLE is held permanently LOW (see the note above HAS_BATTERY_ADC) --
+// setup() does that once at boot, so reading is always just a direct sample.
 float readBatteryVoltage() {
   analogReadResolution(12);
-  analogReference(AR_INTERNAL);
+  analogReference(AR_INTERNAL_2_4); // XIAO Sense's documented VBAT reference
 
   uint32_t totalAdc = 0;
   for (int i = 0; i < 32; i++) {
-    totalAdc += analogRead(BATTERY_PIN);
+    totalAdc += analogRead(PIN_VBAT);
   }
   float rawAdc = totalAdc / 32.0f;
-  float instantVolts = (rawAdc / 4095.0f) * 3.60f * 2.235f;
+  float adcVoltage = (rawAdc / 4095.0f) * 2.4f;
+  float instantVolts = adcVoltage * (1510.0f / 510.0f); // undo the onboard divider
 
   if (filteredBatteryVolts == 0.0f) {
     filteredBatteryVolts = instantVolts;
@@ -76,69 +156,84 @@ float readBatteryVoltage() {
 }
 
 int calculateBatteryPercentage(float volts) {
+  // Breakpoints read off the Amprius INR18650/40 (SA110) 1A discharge curve
+  // (Mooch test data) for the actual cell used in this build, not a generic
+  // Li-ion approximation.
   if (volts >= 4.20f) return 100;
-  if (volts <= 3.30f) return 0;
+  if (volts <= 3.00f) return 0;
   float pct = 0.0f;
-  if (volts >= 3.90f) {
-    pct = 75.0f + ((volts - 3.90f) / (4.20f - 3.90f)) * 25.0f;
-  } else if (volts >= 3.75f) {
-    pct = 50.0f + ((volts - 3.75f) / (3.90f - 3.75f)) * 25.0f;
-  } else if (volts >= 3.60f) {
-    pct = 25.0f + ((volts - 3.60f) / (3.75f - 3.60f)) * 25.0f;
+  if (volts >= 3.95f) {
+    pct = 75.0f + ((volts - 3.95f) / (4.20f - 3.95f)) * 25.0f;
+  } else if (volts >= 3.70f) {
+    pct = 50.0f + ((volts - 3.70f) / (3.95f - 3.70f)) * 25.0f;
+  } else if (volts >= 3.40f) {
+    pct = 25.0f + ((volts - 3.40f) / (3.70f - 3.40f)) * 25.0f;
   } else {
-    pct = ((volts - 3.30f) / (3.60f - 3.30f)) * 25.0f;
+    pct = ((volts - 3.00f) / (3.40f - 3.00f)) * 25.0f;
   }
   int finalPct = (int)(pct + 0.5f);
   return constrain(finalPct, 0, 100);
 }
 
-void runBatterySweepAnimation() {
-  analogReadResolution(12);
-  analogReference(AR_INTERNAL);
-
-  uint32_t totalAdc = 0;
-  for (int i = 0; i < 32; i++) {
-    totalAdc += analogRead(BATTERY_PIN);
+uint16_t batteryGaugeHue(int i) {
+  float ratio = (float)i / (float)(NUM_LEDS - 1);
+  if (ratio <= 0.5f) {
+    return (uint16_t)((ratio / 0.5f) * 43690.0f);
   }
-  float rawAdc = totalAdc / 32.0f;
-  float vBat = (rawAdc / 4095.0f) * 3.60f * 2.235f;
+  return 43690 - (uint16_t)(((ratio - 0.5f) / 0.5f) * 21845.0f);
+}
+
+void runBatterySweepAnimation() {
+  // Reads (via VBAT_ENABLE/PIN_VBAT) don't need the LED rail, but the
+  // display that follows does -- self-contained gating since this can be
+  // called from setup() (no display shown yet) or from loop()'s button
+  // handler (display state varies).
+  float vBat = readBatteryVoltage();
 
   int pct = calculateBatteryPercentage(vBat);
   int targetLeds = (pct * NUM_LEDS) / 100;
   if (targetLeds < 5) targetLeds = 5;
 
-  Serial.printf("\n🔋 [BATTERY CALIBRATED] Raw ADC: %.1f | Calibrated Voltage: %.2fV | Pct: %d%% | LEDs: %d\n",
-                rawAdc, vBat, pct, targetLeds);
+  Serial.printf("\n🔋 [BATTERY] Voltage: %.2fV | Pct: %d%% | LEDs: %d\n",
+                vBat, pct, targetLeds);
+
+  digitalWrite(FET1_GATE_PIN, HIGH);
+  railOn = true;
+  delay(20); // let the boost rail + SK6812 ICs settle before clocking data
 
   strip.clear();
   strip.setBrightness(LED_BRIGHTNESS);
   strip.show();
 
+  // Fixed 100% reference marker at the very end of the strip (solid, on
+  // the SK6812's dedicated white channel so it reads as distinct from the
+  // rainbow-gradient level bar) -- shows how much headroom is left to full.
+  strip.setPixelColor(NUM_LEDS - 1, strip.Color(0, 0, 0, 255));
+
   for (int i = 0; i < targetLeds; i++) {
-    float ratio = (float)i / (float)(NUM_LEDS - 1);
-    uint16_t hue;
-    if (ratio <= 0.5f) {
-      hue = (uint16_t)((ratio / 0.5f) * 43690.0f);
-    } else {
-      hue = 43690 - (uint16_t)(((ratio - 0.5f) / 0.5f) * 21845.0f);
-    }
-    strip.setPixelColor(i, strip.ColorHSV(hue, 255, 255));
+    strip.setPixelColor(i, strip.ColorHSV(batteryGaugeHue(i), 255, 255));
     strip.show();
     delay(30);
   }
 
-  delay(2500);
+  // Flash the top (current level) LED a few times so the exact gauge
+  // reading is easy to spot instead of blending into the solid bar.
+  int topLed = targetLeds - 1;
+  uint16_t topHue = batteryGaugeHue(topLed);
+  for (int flash = 0; flash < 5; flash++) {
+    strip.setPixelColor(topLed, strip.ColorHSV(topHue, 255, 255));
+    strip.show();
+    delay(250);
+    strip.setPixelColor(topLed, 0);
+    strip.show();
+    delay(250);
+  }
+  strip.setPixelColor(topLed, strip.ColorHSV(topHue, 255, 255));
+  strip.show();
 
   for (int b = 255; b >= 0; b -= 15) {
     for (int i = 0; i < targetLeds; i++) {
-      float ratio = (float)i / (float)(NUM_LEDS - 1);
-      uint16_t hue;
-      if (ratio <= 0.5f) {
-        hue = (uint16_t)((ratio / 0.5f) * 43690.0f);
-      } else {
-        hue = 43690 - (uint16_t)(((ratio - 0.5f) / 0.5f) * 21845.0f);
-      }
-      strip.setPixelColor(i, strip.ColorHSV(hue, 255, b));
+      strip.setPixelColor(i, strip.ColorHSV(batteryGaugeHue(i), 255, b));
     }
     strip.show();
     delay(20);
@@ -147,7 +242,11 @@ void runBatterySweepAnimation() {
   strip.clear();
   strip.setBrightness(LED_BRIGHTNESS);
   strip.show();
+
+  digitalWrite(FET1_GATE_PIN, LOW);
+  railOn = false;
 }
+#endif // HAS_BATTERY_ADC
 
 // --- Disney Beacon Global State ---
 volatile bool disneyDeviceFound = false;
@@ -160,6 +259,45 @@ volatile uint8_t showR2 = 0;
 volatile uint8_t showG2 = 0;
 volatile uint8_t showB2 = 255;
 volatile bool isDualColor = false;
+
+// --- CC 03 Wake-Ping Scan Boost ---
+// Per PROTOCOL.md: park infrastructure sends a 500ms "CC 03 00 00 00" wake
+// ping (25ms advertising interval) before the real 3000ms show payload
+// burst -- ~3.5s total. Our idle scan is deliberately lazy (~4% duty, see
+// setup()) to save battery, so on its own it might miss the actual show
+// command. On a wake ping, temporarily switch to a near-continuous scan for
+// long enough to cover that whole burst, then drop back to the lazy default.
+#define SCAN_INTERVAL_LAZY 1600   // 1000ms
+#define SCAN_WINDOW_LAZY   64     // 40ms  (~4% duty)
+#define SCAN_INTERVAL_BOOST 32    // 20ms
+#define SCAN_WINDOW_BOOST   32    // 20ms  (100% duty, matches the 25ms TX interval)
+#define SCAN_BOOST_DURATION_MS 4000 // covers the 500ms wake + 3000ms payload with margin
+
+volatile bool scanBoosted = false;
+volatile unsigned long scanBoostUntil = 0;
+
+void enterBoostedScan() {
+  if (scanBoosted) {
+    scanBoostUntil = millis() + SCAN_BOOST_DURATION_MS; // extend on repeat wake pings
+    return;
+  }
+  Serial.println("📡 [SCAN] CC03 wake ping detected -- boosting scan rate");
+  Bluefruit.Scanner.stop();
+  Bluefruit.Scanner.setInterval(SCAN_INTERVAL_BOOST, SCAN_WINDOW_BOOST);
+  Bluefruit.Scanner.start(0);
+  scanBoosted = true;
+  scanBoostUntil = millis() + SCAN_BOOST_DURATION_MS;
+}
+
+void updateScanBoost(unsigned long now) {
+  if (scanBoosted && now > scanBoostUntil) {
+    Serial.println("📡 [SCAN] Boost window expired -- back to lazy scan");
+    Bluefruit.Scanner.stop();
+    Bluefruit.Scanner.setInterval(SCAN_INTERVAL_LAZY, SCAN_WINDOW_LAZY);
+    Bluefruit.Scanner.start(0);
+    scanBoosted = false;
+  }
+}
 
 // Function declarations
 void scan_callback(ble_gap_evt_adv_report_t *report);
@@ -174,10 +312,10 @@ void runNeonGlitch();
 void runHyperDrive(uint8_t gHue);
 
 // Manual Button Control State
-volatile uint8_t manualMode = 0; // 0 = Auto/BLE Rainbow, 1-7 = Custom Animations
+volatile uint8_t manualMode = 0; // 0 = Off, 1-7 = Custom Animations (BLE shows override either way)
 const uint8_t NUM_MANUAL_MODES = 8;
 const char* MODE_NAMES[] = {
-    "Auto (Rainbow / BLE)",
+    "Off",
     "Rainbow Wave",
     "Ignition Pulse",
     "Meteor Chase",
@@ -196,6 +334,7 @@ uint8_t gHue = 0;
 volatile uint8_t receivedCommandType = 0;
 volatile uint8_t showColors5[5][3]; // 5-slot palette RGB matrix
 
+#if !FET1_TOGGLE_TEST
 void executeDisneyMicrocode() {
   if (receivedCommandType == 0xC1) {
     // ✨ STARLIGHT BUBBLE WAND: 4 seconds of magical sparkle
@@ -297,28 +436,54 @@ void executeDisneyMicrocode() {
     strip.show();
   }
 }
+#endif // !FET1_TOGGLE_TEST
 
 void setup() {
   Serial.begin(115200);
 
-  // Button & Haptic Pin Setup
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  pinMode(HAPTIC_PIN, OUTPUT);
-  digitalWrite(HAPTIC_PIN, LOW);
+#if IMU_POLL_TEST
+  delay(2000); // give USB serial time to connect
+  Serial.println("\n=== IMU polling bring-up test ===");
+  if (myIMU.begin() != 0) {
+    Serial.println("IMU init FAILED");
+  } else {
+    Serial.println("IMU init OK");
+  }
+  return;
+#endif
 
-  // 📳 Startup Haptic Test: 1-Second Full-Power Pulse
-  triggerHapticPattern(0xFF);
-
-  // Onboard LEDs Off
-  pinMode(PIN_015, OUTPUT);
-  digitalWrite(PIN_015, LOW);
-  pinMode(PIN_109, OUTPUT);
-  digitalWrite(PIN_109, LOW);
+  // FET1 gate: default OFF. The rail is only powered while actively pushing
+  // pixel data -- holding it off otherwise is the whole point of FET1
+  // (true zero-drain idle vs. a boost converter + LED ICs idling at "black").
+  pinMode(FET1_GATE_PIN, OUTPUT);
+  digitalWrite(FET1_GATE_PIN, LOW);
 
   strip.begin();
   strip.setBrightness(LED_BRIGHTNESS);
   strip.clear();
   strip.show();
+
+#if FET1_TOGGLE_TEST
+  Serial.println("\n=== FET1 + NeoPixel rail-gated bring-up test ===");
+#else
+#if HAS_BUTTON
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+#endif
+#if HAS_HAPTIC
+  pinMode(HAPTIC_PIN, OUTPUT);
+  digitalWrite(HAPTIC_PIN, LOW);
+
+  // 📳 Startup Haptic Test: 1-Second Full-Power Pulse
+  triggerHapticPattern(0xFF);
+#endif
+#if HAS_BATTERY_ADC
+  // Held permanently LOW -- see the note above HAS_BATTERY_ADC.
+  pinMode(VBAT_ENABLE, OUTPUT);
+  digitalWrite(VBAT_ENABLE, LOW);
+#endif
+
+  // Rail stays off at boot -- loop() only powers it while something is
+  // actually being displayed (BLE show or a selected manual mode).
 
   Serial.println("\n=========================================");
   Serial.println("   NRF52840 DISNEY BLE RECEIVER STARTED  ");
@@ -330,7 +495,10 @@ void setup() {
 
   Bluefruit.Scanner.setRxCallback(scan_callback);
   Bluefruit.Scanner.restartOnDisconnect(true);
-  Bluefruit.Scanner.setInterval(6400, 3200);
+  // Units are 0.625ms per the BLE GAP scan parameter spec. Lazy default is
+  // ~4% duty cycle to save battery; a CC03 wake ping (see enterBoostedScan())
+  // temporarily switches to SCAN_*_BOOST for reliable payload capture.
+  Bluefruit.Scanner.setInterval(SCAN_INTERVAL_LAZY, SCAN_WINDOW_LAZY);
   Bluefruit.Scanner.filterMSD(
       DISNEY_COMPANY_ID_LE);  // Filter Disney Manufacturer ID
   Bluefruit.Scanner.start(0); // 0 = continuous scan mode with duty cycling
@@ -338,14 +506,52 @@ void setup() {
   Serial.println(
       ">>> BLE Scanner initialized & searching for Disney Beacons...");
 
+#if HAS_BATTERY_ADC
   // Run battery sweep animation once at startup
   runBatterySweepAnimation();
+#endif
+#endif // FET1_TOGGLE_TEST
 }
 
+#if IMU_POLL_TEST
+void loop() {
+  float ax = myIMU.readFloatAccelX();
+  float ay = myIMU.readFloatAccelY();
+  float az = myIMU.readFloatAccelZ();
+  float magnitude = sqrtf(ax * ax + ay * ay + az * az);
+  Serial.printf("Accel: X=%.3f Y=%.3f Z=%.3f g | |a|=%.3f g\n", ax, ay, az, magnitude);
+  delay(200);
+}
+#elif FET1_TOGGLE_TEST
+void showColorOnRail(const char *name, uint32_t color) {
+  Serial.printf("Rail ON  -> %s (5V rail should read ~5.15V)\n", name);
+  digitalWrite(FET1_GATE_PIN, HIGH);
+  delay(20); // let the boost rail + SK6812 ICs settle before clocking data
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, color);
+  }
+  strip.show();
+  delay(2000);
+
+  Serial.println("Rail OFF (SK6812s unpowered -> true 0 drain, not just dark)");
+  digitalWrite(FET1_GATE_PIN, LOW);
+  delay(2000);
+}
+
+void loop() {
+  showColorOnRail("RED", strip.Color(255, 0, 0));
+  showColorOnRail("GREEN", strip.Color(0, 255, 0));
+  showColorOnRail("BLUE", strip.Color(0, 0, 255));
+  showColorOnRail("WHITE (4th SK6812 channel)", strip.Color(0, 0, 0, 255));
+}
+#else
 void loop() {
   unsigned long now = millis();
   gHue++;
 
+  updateScanBoost(now);
+
+#if HAS_BUTTON
   // --- Button Read & Debounce (Short-press cycles modes, Long-press > 1.2s triggers Battery Sweep) ---
   bool reading = digitalRead(BUTTON_PIN);
   static unsigned long pressStartTime = 0;
@@ -359,9 +565,13 @@ void loop() {
       longPressHandled = false;
     } else if (!longPressHandled && (now - pressStartTime > 1200)) {
       longPressHandled = true;
+#if HAS_BATTERY_ADC
       Serial.println("🔘 [BUTTON] Long Press (>1.2s)! Running Battery Sweep...");
+#if HAS_HAPTIC
       triggerHapticPattern(0x02); // Double tap haptic pulse
+#endif
       runBatterySweepAnimation();
+#endif
     }
   } else {
     if (buttonPressed) {
@@ -369,56 +579,76 @@ void loop() {
       if (!longPressHandled && (now - pressStartTime < 1200) && (now - pressStartTime > DEBOUNCE_DELAY)) {
         manualMode = (manualMode + 1) % NUM_MANUAL_MODES;
         Serial.printf("🔘 [BUTTON] Short Press! Mode %d: %s\n", manualMode, MODE_NAMES[manualMode]);
+#if HAS_HAPTIC
         triggerHapticPattern(0x01); // Short single click haptic pulse
+#endif
       }
     }
   }
+#endif // HAS_BUTTON
 
-  // --- Display Priority ---
-  if (disneyDeviceFound) {
-    executeDisneyMicrocode();
+  // A BLE show that hasn't refreshed in >4s has ended.
+  if (disneyDeviceFound && (now - lastShowSyncTime > 4000)) {
+    disneyDeviceFound = false;
+  }
 
-    if (now - lastShowSyncTime > 4000) {
-      disneyDeviceFound = false;
-    }
-  } else {
-    // 2. Manual Animations or Default Rainbow Mode
-    switch (manualMode) {
-      case 0: // Auto (Idle Ambient Rainbow)
-      case 1: // Rainbow Wave
-        {
-          uint16_t hue = (now / 10) % 65536;
-          for (int i = 0; i < NUM_LEDS; i++) {
-            uint32_t color = strip.ColorHSV(hue + (i * 65536 / NUM_LEDS), 255, 120);
-            strip.setPixelColor(i, color);
+  // --- Rail Gating: FET1 stays off unless something is actually being shown ---
+  // railOn is a global (declared near the top) since runBatterySweepAnimation()
+  // also toggles FET1_GATE_PIN directly and must keep this in sync.
+  bool wantDisplay = disneyDeviceFound || (manualMode != 0);
+
+  if (wantDisplay && !railOn) {
+    digitalWrite(FET1_GATE_PIN, HIGH);
+    delay(20); // let the boost rail + SK6812 ICs settle before clocking data
+    railOn = true;
+  } else if (!wantDisplay && railOn) {
+    digitalWrite(FET1_GATE_PIN, LOW);
+    railOn = false;
+  }
+
+  if (wantDisplay) {
+    if (disneyDeviceFound) {
+      executeDisneyMicrocode();
+    } else {
+      // Manual Animations
+      switch (manualMode) {
+        case 1: // Rainbow Wave
+          {
+            uint16_t hue = (now / 10) % 65536;
+            for (int i = 0; i < NUM_LEDS; i++) {
+              uint32_t color = strip.ColorHSV(hue + (i * 65536 / NUM_LEDS), 255, 120);
+              strip.setPixelColor(i, color);
+            }
+            strip.show();
           }
-          strip.show();
-        }
-        break;
-      case 2: // Ignition Pulse
-        runIgnitionPulse(gHue);
-        break;
-      case 3: // Meteor Chase
-        runMeteorChase();
-        break;
-      case 4: // Cyber Plasma
-        runCyberPlasma();
-        break;
-      case 5: // Lightning Storm
-        runLightningStorm();
-        break;
-      case 6: // Neon Glitch
-        runNeonGlitch();
-        break;
-      case 7: // HyperDrive
-        runHyperDrive(gHue);
-        break;
+          break;
+        case 2: // Ignition Pulse
+          runIgnitionPulse(gHue);
+          break;
+        case 3: // Meteor Chase
+          runMeteorChase();
+          break;
+        case 4: // Cyber Plasma
+          runCyberPlasma();
+          break;
+        case 5: // Lightning Storm
+          runLightningStorm();
+          break;
+        case 6: // Neon Glitch
+          runNeonGlitch();
+          break;
+        case 7: // HyperDrive
+          runHyperDrive(gHue);
+          break;
+      }
     }
   }
   delay(20);
 }
+#endif // FET1_TOGGLE_TEST
 
 // --- Animation Routines ---
+#if !FET1_TOGGLE_TEST
 void runIgnitionPulse(uint8_t gHue) {
   uint8_t pulseIntensity = beatsin8(45, 130, 255);
   for (int i = 0; i < NUM_LEDS; i++) {
@@ -507,6 +737,7 @@ void runHyperDrive(uint8_t gHue) {
   strip.setPixelColor((leadHead + (NUM_LEDS / 2)) % NUM_LEDS, strip.ColorHSV(h2, 255, 255));
   strip.show();
 }
+#endif // !FET1_TOGGLE_TEST
 
 // BLE Advertisement Packet Callback
 void scan_callback(ble_gap_evt_adv_report_t *report) {
@@ -535,6 +766,16 @@ void scan_callback(ble_gap_evt_adv_report_t *report) {
 void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
   if (len < 4)
     return;
+
+  // CC 03 - Wake Ping (PROTOCOL.md): checked ahead of the debounce gate below
+  // so a wake ping is never suppressed by an unrelated prior show command's
+  // cooldown -- the real payload arrives ~500ms later and needs the boosted
+  // scan rate to be active in time to catch it.
+  if (payload[0] == 0x83 && payload[1] == 0x01 && payload[2] == 0xCC &&
+      payload[3] == 0x03) {
+    enterBoostedScan();
+    return;
+  }
 
   unsigned long now = millis();
   static unsigned long lastPacketRxTime = 0;
