@@ -356,19 +356,31 @@ volatile uint8_t showColors5[5][3]; // 5-slot palette RGB matrix
 #if !FET1_TOGGLE_TEST
 void executeDisneyMicrocode() {
   if (receivedCommandType == 0xC1) {
-    // ✨ STARLIGHT BUBBLE WAND: 4 seconds of magical sparkle
-    for (int frame = 0; frame < 40; frame++) {
+    // ✨ STARLIGHT BUBBLE WAND: continuous sparkle for the show's real
+    // duration (governed by loop()'s Timing-Byte expiry, not a hardcoded
+    // frame count). Elapsed-time-throttled instead of delay()-blocked --
+    // called every loop() pass but only renders a new frame every 80ms, so
+    // BLE scanning/button/haptic/rail-gating keep running in between.
+    const unsigned long FRAME_INTERVAL_MS = 80;
+    static unsigned long lastFrame = 0;
+    if (millis() - lastFrame >= FRAME_INTERVAL_MS) {
+      lastFrame = millis();
       for (int i = 0; i < NUM_LEDS; i++) {
         strip.setPixelColor(i, strip.Color(showR1, showG1, showB1));
       }
       strip.setPixelColor(random(NUM_LEDS), strip.Color(255, 255, 255));
       strip.setPixelColor(random(NUM_LEDS), strip.Color(255, 255, 255));
       strip.show();
-      delay(80);
     }
   } else if (receivedCommandType == 0xC4) {
-    // 🗿 FAB 50 STATUE: 5 seconds of golden magical swirl
-    for (int swirl = 0; swirl < 80; swirl++) {
+    // 🗿 FAB 50 STATUE: golden magical swirl, same non-blocking pattern.
+    // `swirl` is static so the trail position keeps advancing frame-to-frame
+    // instead of resetting inside a blocking loop.
+    const unsigned long FRAME_INTERVAL_MS = 60;
+    static unsigned long lastFrame = 0;
+    static int swirl = 0;
+    if (millis() - lastFrame >= FRAME_INTERVAL_MS) {
+      lastFrame = millis();
       for (int i = 0; i < NUM_LEDS; i++) {
         uint32_t c = strip.getPixelColor(i);
         uint8_t r = ((c >> 16) & 0xFF) * 0.75;
@@ -381,7 +393,7 @@ void executeDisneyMicrocode() {
       strip.setPixelColor(p1, strip.Color(255, 215, 0)); // Gold
       strip.setPixelColor(p2, strip.Color(255, 255, 255)); // White
       strip.show();
-      delay(60);
+      swirl++;
     }
   } else if (receivedCommandType == 0x09) {
     // 🎨 5-COLOR PALETTE RING: 5 distinct color segments
@@ -396,23 +408,37 @@ void executeDisneyMicrocode() {
     }
     strip.show();
   } else if (receivedCommandType == 0x0E || receivedCommandType == 0x0C) {
-    // ⚡ STROBE PULSE: 4 seconds of rapid alternating strobe
-    for (int f = 0; f < 35; f++) {
-      for (int i = 0; i < NUM_LEDS; i++) {
-        strip.setPixelColor(i, strip.Color(255, 255, 255)); // White Strobe
+    // ⚡ STROBE PULSE: alternate white/black continuously for the show's
+    // real duration -- same non-blocking throttle pattern.
+    const unsigned long STROBE_INTERVAL_MS = 50;
+    static unsigned long lastFrame = 0;
+    static bool strobeOn = false;
+    if (millis() - lastFrame >= STROBE_INTERVAL_MS) {
+      lastFrame = millis();
+      strobeOn = !strobeOn;
+      if (strobeOn) {
+        for (int i = 0; i < NUM_LEDS; i++) {
+          strip.setPixelColor(i, strip.Color(255, 255, 255));
+        }
+      } else {
+        strip.clear();
       }
       strip.show();
-      delay(50);
-      strip.clear();
-      strip.show();
-      delay(50);
     }
   } else if (receivedCommandType == 0x12) {
-    // 🌊 WAVE PULSE: MagicBand+ replica spinning chaser and center beat
+    // 🌊 WAVE PULSE: MagicBand+ replica spinning chaser and center beat.
+    // Previously capped at its own hardcoded 6s internal while-loop --
+    // removed in favor of running for as long as loop() keeps calling this
+    // branch (i.e. the real decoded Timing Byte duration), same as every
+    // other show handler.
+    const unsigned long BEAT_INTERVAL_MS = 90;
+    const unsigned long SPIN_INTERVAL_MS = 35;
+    static unsigned long lastFrame = 0;
+    static int step = 0;
     int half = NUM_LEDS / 2;
-    unsigned long animStart = millis();
-    int step = 0;
-    while (millis() - animStart < 6000) {
+    unsigned long frameInterval = (step % 10 == 0) ? BEAT_INTERVAL_MS : SPIN_INTERVAL_MS;
+    if (millis() - lastFrame >= frameInterval) {
+      lastFrame = millis();
       int spinPos = step % half;
       if (step % 10 == 0) {
         strip.clear();
@@ -422,8 +448,6 @@ void executeDisneyMicrocode() {
             strip.setPixelColor(offset + c, strip.Color(showR2, showG2, showB2));
           }
         }
-        strip.show();
-        delay(90);
       } else {
         for (int i = 0; i < NUM_LEDS; i++) {
           strip.setPixelColor(i, strip.Color(showR1, showG1, showB1));
@@ -432,9 +456,8 @@ void executeDisneyMicrocode() {
         strip.setPixelColor((spinPos + 1) % half, strip.Color(showR2, showG2, showB2));
         strip.setPixelColor(half + spinPos, strip.Color(showR2, showG2, showB2));
         strip.setPixelColor(half + ((spinPos + 1) % half), strip.Color(showR2, showG2, showB2));
-        strip.show();
-        delay(35);
       }
+      strip.show();
       step++;
     }
   } else if (receivedCommandType == 0x11) {

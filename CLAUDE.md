@@ -44,7 +44,7 @@ Wearable BLE-controlled LED Mickey ears headband, built around a Seeed XIAO nRF5
 - **Wire exit through heat-shrink:** since P+/P− sit mid-board, cut a small slit in the tube at the marked P+/P− location (not just using the tube's open end), feed both wires through while positioning the tube, shrink, then seal the slit with a dab of hot glue afterward
 - Board corners should be taped/rounded before shrinking to avoid concentrating stress on the solder joints
 
-**Open item:** exact wire routing destination from P+/P− (straight to FET0 vs. an intermediate connector) not yet finalized — affects how much slack to leave before final glue-seal of the heat-shrink exit.
+**Open item:** exact wire routing destination from P+/P− (straight to the XIAO rail vs. an intermediate connector, now that FET0 is eliminated) not yet finalized — affects how much slack to leave before final glue-seal of the heat-shrink exit.
 
 ---
 
@@ -65,7 +65,7 @@ Wearable BLE-controlled LED Mickey ears headband, built around a Seeed XIAO nRF5
 - FET0's control scheme was under discussion but FET0 has since been eliminated entirely (see above) — no longer applicable
 - FET2's sense method is finalized (passive GND-jumper gate, see FET matrix above) — no longer an open item
 
-**6-pin pogo connector assignment (per ear):** PWR, GND, DATA, SENSE currently in use; DATA is daisy-chained (one XIAO GPIO feeds ear 1, ear 1's data-out feeds ear 2 — removing ear 1 breaks the chain to ear 2, an accepted tradeoff of this topology). The remaining 2 pins are reserved for a future resistor-ladder ear-ID scheme (distinguishing ear type/variant), not yet wired or used by any current firmware.
+**6-pin pogo connector assignment (per ear):** PWR, GND, DATA, SENSE currently in use; DATA is daisy-chained (one XIAO GPIO feeds ear 1, ear 1's data-out feeds ear 2 — removing ear 1 breaks the chain to ear 2, an accepted tradeoff of this topology). The remaining 2 pins are spare/unallocated — the previously-planned resistor-ladder ear-ID scheme has been dropped from this version.
 
 ---
 
