@@ -345,7 +345,7 @@ Captured from Walt Disney World park infrastructure (Spaceship Earth, HarmonioUS
 
 - **`E9 04`**: Park Show Sync Base
 - **`E9 08`** *(Short Form Direct 5-Slot)*: `E9 08 ... 0F [C0] [C1] [C2] [C3] [C4]`
-- **`E9 13`**, **`EA 14`**: Long-format park show sequences sharing the same `F4 48 82` byte sequence noted below for `E9 10` — not yet decoded to the same depth.
+- **`EA 14`**: Long-format park show sequence sharing the same `F4 48 82` byte sequence noted below for `E9 10` — not decoded. One real captured example tested live (`research/BLE_Beacon_Ears`'s "white sparkling" capture) produced **no reaction at all** on a real MagicBand+, unlike every `E9 10`/`E9 13` example tested — possibly a different target device class than a standard band, or a stale/replay-sensitive capture, not confirmed either way.
 
 #### `E9 10` — "Alternating Colors" (bench-confirmed layout)
 
@@ -369,6 +369,14 @@ Byte:    83   01   E9      10         00       Timing   0F       5×ColorByte   
 - Offsets 13–21 (`D1 46 09 0A D0 65 28 21 02` in the example above): individually toggled to `Off` one at a time with no observed effect on any LED or on vibration — purpose still unknown.
 - The wrapped variant of this opcode (`E1 00 E9 10 00 13 48 97 D0 0E A0 D1 46 06 0F 30 D0 4E 07 B0`, also the only `E9 10` example in the `research/flipper` Magic Band Plus Lights app, itself sourced from the same `emcot.world` community page) does **not** follow this byte layout — its byte 4 (where the `0F` marker sits in every other confirmed E9 command) is `0x48`, not `0x0F`, so it's a genuinely different sub-format, not decoded.
 - Vibration is **not** payload-byte-controlled for `E9 10` — confirmed by grafting `E9 12`'s trailing bytes (which do vibrate) onto an `E9 10` packet with the opcode byte still `10`: no vibration. Changing only the opcode byte from `10`→`12` (same trailing bytes) restored vibration — meaning vibration is gated by the opcode itself (`E9 12` is literally named "Circle With Vibration" in the community notes), not by any specific data byte.
+
+#### `E9 13` (unwrapped) — shares `E9 10`'s byte layout and Timing Byte formula
+
+Bench-confirmed against a real MagicBand+: the same `[Center, NE, SE, SW, NW]` `(Mode<<5)|PaletteIndex` color layout and Timing Byte formula (offset 3, same as `E9 10`) apply here too — the model generalizes across opcodes, not opcode-specific. Real captured example (`research/BLE_Beacon_Ears`'s "orange red sparkle" capture): `E9 13 00 B6 0F 40 44 58 F4 48 82 D0 65 19 D1 46 06 0A 30 7B FF` — Timing Byte `0xB6` has `ALWAYS_ON=1`, so it never expires.
+
+- Duration formula confirmed correct for `TIME_VAL≥1` (matched predicted vs. observed within ~1s across two different values). `TIME_VAL=0` is a real anomaly: predicted 6.5s, actual ~10s — likely a firmware-enforced minimum floor or `0` treated as a "use default" sentinel rather than the literal formula value.
+- `FADE_CODE` has **no observable effect** on this animation, tested across its full range (`00`/`01`/`11`) — always an identical hard cutoff, never a visible fade. The documented fade-out table (section 3) may not apply uniformly to every command.
+- The animation consistently reserves a fixed **~4.5–5s "hold last frame, then hard-cut" tail** at the end of the show, regardless of total duration — confirmed across four different total durations (6.5–30.3s predicted range). The visible motion itself scales with the Timing-Byte-commanded total (`motion_duration ≈ total_duration − ~4.5s`), so the overall show length is genuinely Timing-Byte-controlled; it's specifically this tail behavior that's fixed and indifferent to `FADE_CODE`.
 
 ---
 
