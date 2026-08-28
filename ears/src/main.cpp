@@ -420,6 +420,22 @@ void executeDisneyMicrocode() {
       }
     }
     strip.show();
+  } else if (receivedCommandType == 0xFB) {
+    // ⚪ E9 0B HIGH-CONTRAST CIRCLE: a 6-pixel-wide cluster of white dots
+    // chasing around the ring together, dark otherwise -- confirmed live
+    // against a real MagicBand+ (started as a single dot, tuned to a
+    // 6-wide cluster + faster speed per direct comparison against the real
+    // band's animation). Uses the SK6812's real white channel, same as the
+    // E9 0C/0E white fix earlier.
+    const unsigned long STEP_MS = 40;
+    const int DOT_COUNT = 6;
+    int pos = (int)((millis() / STEP_MS) % NUM_LEDS);
+    strip.clear();
+    for (int d = 0; d < DOT_COUNT; d++) {
+      int i = (pos + d) % NUM_LEDS;
+      strip.setPixelColor(i, strip.Color(0, 0, 0, 255));
+    }
+    strip.show();
   } else if (receivedCommandType == 0x0E) {
     // ⚡ STROBE/BLINK PULSE: alternate showR1/G1/B1/black continuously for
     // the show's real duration -- same non-blocking throttle pattern. Uses
@@ -1257,12 +1273,17 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
     }
     // 0x0B: High-Contrast Circle (Mode 4 on Transmitter)
     else if (showCmd == 0x0B) {
-      showR1 = 0;   showG1 = 128; showB1 = 255; // Electric Blue outer
-      showR2 = 255; showG2 = 255; showB2 = 255; // White inner
-      isDualColor = true;
+      // Previous "Electric Blue outer, White inner" behavior was never
+      // bench-tested -- PROTOCOL.md's documented example for this command
+      // has different (also untested) tail bytes than what our own
+      // transmitter actually sends (which matches the real captured
+      // example in research/emcot.txt exactly). Confirmed live against a
+      // real MagicBand+: a single white LED chasing around the ring, dark
+      // otherwise -- not a static two-zone fill at all.
+      receivedCommandType = 0xFB; // single white dot chase, dark otherwise
       lastShowSyncTime = now;
       disneyDeviceFound = true;
-      Serial.println("   🎨 [Mode 4] High-Contrast Electric Blue & White Circle!");
+      Serial.println("   🎨 [Mode 4] High-Contrast Circle: white dot chase!");
     }
     // 0x09: 5-Color Palette Ring (Mode 7 on Transmitter)
     // Same 2-byte sub-header issue as 0x08 (see note above): the 5 palette

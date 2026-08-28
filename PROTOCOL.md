@@ -249,11 +249,11 @@ Details: each color byte = 0xA0 | (PaletteIdx & 0x1F)
 ### E9 0B — High-Contrast Circle
 
 ```
-Full Payload: E1 00 E9 0B 0B 0F 0F 5C 42 5C A2 DC 42 32 05
-
-Details:
-- Renders Electric Blue outer ring with White center fill.
+Full Payload (as sent by BLE Transmitter/, matches the raw example in research/emcot.txt exactly):
+E1 00 E9 0B 0B 0F 0F 5C 5D 48 A5 D1 45 32 05
 ```
+
+⚠️ The "Electric Blue outer ring, White center fill" description previously here (with a different, never-tested tail-byte example) was never bench-verified. Confirmed live against a real MagicBand+ using the actual payload above: this renders as a **cluster of white dots chasing around the ring, dark otherwise** — not a static two-zone fill. Tuned via direct comparison against the real band's animation to a 6-pixel-wide cluster at a ~40ms step rate; started from a single white dot which was too sparse/slow before landing on this.
 
 ---
 
