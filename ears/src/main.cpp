@@ -353,6 +353,17 @@ uint8_t gHue = 0;
 volatile uint8_t receivedCommandType = 0;
 volatile uint8_t showColors5[5][3]; // 5-slot palette RGB matrix
 
+// --- Family 3 (Park Infrastructure) E9 10 decode state ---
+// Bench-confirmed against a real MagicBand+ (see PROTOCOL.md sec. 6.1): 5
+// independently-addressable LED slots (Center, NE, SE, SW, NW on the real
+// band), each payload byte packing (mode<<5)|paletteIndex. Kept separate
+// from showColors5 above since that one belongs to the unrelated E9 09
+// (Family 1) handler.
+volatile uint8_t showColorsPark5[5][3];
+volatile uint8_t parkPatternId = 0; // payload[12] -- only 0x30/0x31 confirmed as a rotating chase
+volatile bool parkSpin = false;        // computed at parse time, see parseDisneyPacket()
+volatile bool parkSpinReverse = false;
+
 #if !FET1_TOGGLE_TEST
 void executeDisneyMicrocode() {
   if (receivedCommandType == 0xC1) {
@@ -511,8 +522,56 @@ void executeDisneyMicrocode() {
       strip.setPixelColor(i, strip.Color(rB, gB, bB));
     }
     strip.show();
+  } else if (receivedCommandType == 0x10) {
+    // 🎡 FAMILY 3 PARK SHOW (E9 10 "Alternating Colors"): 5 independently
+    // colored zones split across the strip -- the real MagicBand+ has 5
+    // discrete physical LEDs (4-LED ring + 1 center), which our linear
+    // strip has no direct 1:1 layout for, so this just divides NUM_LEDS
+    // into 5 equal zones, same convention already used for 0x09's 5-color
+    // ring. parkSpin/parkSpinReverse are decided in parseDisneyPacket():
+    // pattern IDs 0x30/0x31 are bench-confirmed to trigger this rotation
+    // (direction flipped by the low bit) when top3 is 5-7; for top3 0-4 the
+    // real trigger condition isn't confirmed, so it defaults to spinning
+    // since that's what the one real-world example of that mode does.
+    int segSize = NUM_LEDS / 5;
+    int rotateOffset = 0;
+    if (parkSpin) {
+      const unsigned long STEP_MS = 500; // ~1 zone-hop every half second
+      int step = (int)(millis() / STEP_MS);
+      rotateOffset = parkSpinReverse ? -step : step;
+    }
+    for (int s = 0; s < 5; s++) {
+      int srcSlot = ((s + rotateOffset) % 5 + 5) % 5;
+      uint32_t c = strip.Color(showColorsPark5[srcSlot][0], showColorsPark5[srcSlot][1],
+                                showColorsPark5[srcSlot][2]);
+      int startIdx = s * segSize;
+      int count = (s == 4) ? (NUM_LEDS - startIdx) : segSize;
+      for (int i = startIdx; i < startIdx + count; i++) {
+        strip.setPixelColor(i, c);
+      }
+    }
+    strip.show();
+  } else if (receivedCommandType == 0xFE) {
+    // 🔴 FAMILY 3 PARK SHOW, top3 0-4 (single-color chase): the real band
+    // showed only Center's own color, mostly lit, with a single ~1/5-strip
+    // dark gap sweeping around it -- not a small lit dot on a dark
+    // background like the first attempt at this had it (backwards). See
+    // the comment in parseDisneyPacket() above for why only Center's color
+    // is used here.
+    const unsigned long STEP_MS = 40;
+    const int GAP_WIDTH = NUM_LEDS / 5;
+    int pos = (int)((millis() / STEP_MS) % NUM_LEDS);
+    for (int i = 0; i < NUM_LEDS; i++) {
+      strip.setPixelColor(i, strip.Color(showR1, showG1, showB1));
+    }
+    for (int d = 0; d < GAP_WIDTH; d++) {
+      int i = (pos + d) % NUM_LEDS;
+      strip.setPixelColor(i, 0);
+    }
+    strip.show();
   } else {
-    // Standard Hold Display (0x05, 0x06, 0x08, 0x0B)
+    // Standard Hold Display (0x05, 0x06, 0x08, 0x0B, and the Family 3
+    // hash-derived fallback for undecoded opcodes)
     if (isDualColor) {
       int half = NUM_LEDS / 2;
       for (int i = 0; i < half; i++) {
@@ -924,6 +983,108 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
   uint16_t companyId = (payload[1] << 8) | payload[0];
   if (companyId != DISNEY_COMPANY_ID_LE && companyId != DISNEY_COMPANY_ID_BE)
     return;
+
+  // Family 3 (PROTOCOL.md sec. 6): Direct Park Infrastructure opcodes,
+  // broadcast as [0x83][0x01][0xE9|0xEA][Opcode]... with no [E1|E2][0x00]
+  // wearable wrapper -- so the show header sits 2 bytes earlier than the
+  // Family 1 wearable layout checked below, and can also be 0xEA (a header
+  // value Family 1 never uses). E9 10 is decoded below (see PROTOCOL.md
+  // sec. 6.1); everything else (E9 04, E9 13, EA 14, E9 08 short-form,
+  // etc.) still isn't, and falls back to a hash-derived color.
+  if (len >= 4 && (payload[2] == 0xE9 || payload[2] == 0xEA)) {
+    lastPacketRxTime = now;
+    uint8_t opcode = payload[3];
+    Serial.printf("\n🏗️  [BLE RX] FAMILY 3 (Park Infrastructure) packet! "
+                  "Header=0x%02X Opcode=0x%02X len=%d\n",
+                  payload[2], opcode, len);
+
+    // E9 10 ("Alternating Colors" per community naming) is the one Family 3
+    // opcode bench-confirmed end-to-end against a real MagicBand+ (see
+    // PROTOCOL.md sec. 6.1): 5 independently-addressable LED slots at
+    // payload[7..11] (Center/NE/SE/SW/NW on the real band), each byte
+    // packing (mode<<5)|paletteIndex -- same two-field split PROTOCOL.md
+    // documents for E9 05's LED-position mask, just carrying a different
+    // meaning in the top 3 bits here. Timing Byte sits at payload[5] (2
+    // bytes earlier than the Family 1 offset since there's no E1/E2 00
+    // wrapper). payload[12] is an "extra animation ID" byte -- only 0x30
+    // and 0x31 are confirmed to trigger a 5-zone rotating chase (direction
+    // flips on the low bit); everything else, including the real captured
+    // default 0x82, renders as a static per-slot fill of the real decoded
+    // colors.
+    // The 5-slot/PatternID model above is only bench-confirmed when byte 7's
+    // top3 (mode) is 5, 6, or 7 -- that's what every rotation/static test
+    // this session actually varied. Top3 0-4 (which includes mode 2, the
+    // real captured default's own mode) showed real, reproducible motion
+    // that this model doesn't explain: isolating individual bytes never
+    // reproduced it. Watching the real band directly (not just a photo)
+    // showed only Center's own color (Red Orange) moving -- no Cyan/Pink
+    // from the other slots ever appeared -- so this isn't the same 5-color
+    // chase as mode 5-7; it reads as a single dot of just Center's color
+    // in motion. Rendered as that: NE/SE/SW/NW's bytes are decoded (in
+    // case a future session figures out what they're for) but not used by
+    // this specific render path.
+    if (opcode == 0x10 && len >= 13) {
+      applyShowTiming(payload[5]);
+      for (int s = 0; s < 5; s++) {
+        uint8_t idx = payload[7 + s] & 0x1F;
+        CRGB col = DISNEY_PALETTE[idx];
+        showColorsPark5[s][0] = col.r;
+        showColorsPark5[s][1] = col.g;
+        showColorsPark5[s][2] = col.b;
+      }
+      uint8_t centerTop3 = (payload[7] >> 5) & 0x07;
+      bool isRainbowFamily = (centerTop3 >= 5 && centerTop3 <= 7);
+      parkPatternId = payload[12];
+      if (isRainbowFamily) {
+        // Bench-confirmed: only 0x30/0x31 spin here, direction from the low bit.
+        parkSpin = (parkPatternId == 0x30 || parkPatternId == 0x31);
+        parkSpinReverse = (parkPatternId & 0x01) != 0;
+        receivedCommandType = 0x10;
+        Serial.printf("   🎡 [E9 10] top3=%d pattern=0x%02X spin=%s timing=%lums\n",
+                      centerTop3, parkPatternId, parkSpin ? "true" : "false",
+                      currentShowDurationMs);
+      } else {
+        // Top3 0-4: single moving dot of just Center's real color.
+        showR1 = showColorsPark5[0][0];
+        showG1 = showColorsPark5[0][1];
+        showB1 = showColorsPark5[0][2];
+        receivedCommandType = 0xFE; // single-dot chase renderer
+        Serial.printf("   🎡 [E9 10] top3=%d single-color chase, color=%s "
+                      "timing=%lums\n",
+                      centerTop3, DISNEY_PALETTE_NAMES[payload[7] & 0x1F],
+                      currentShowDurationMs);
+      }
+      lastShowSyncTime = now;
+      disneyDeviceFound = true;
+    } else {
+      // Not yet decoded (E9 04, E9 13, EA 14, E9 08 short-form, etc.) --
+      // render a deterministic hash-derived color instead of doing nothing,
+      // same philosophy as Adafruit's own reference renderer for these
+      // exact opcodes (see research/BLE_Beacon_Ears -- their
+      // _show_command_generic_path()): different captures still look
+      // different from each other on the strip, even though we can't yet
+      // decode their internal structure.
+      uint16_t seed = 0;
+      for (uint16_t i = 0; i < len; i++) {
+        seed = (seed * 31 + payload[i]) & 0xFFFF;
+      }
+      uint8_t idx = seed % 32;
+      if (idx == 29) idx = (idx + 1) % 32; // never land on "Off" (black)
+      CRGB col = DISNEY_PALETTE[idx];
+      showR1 = col.r;
+      showG1 = col.g;
+      showB1 = col.b;
+      isDualColor = false;
+      currentShowDurationMs = 4000;
+      currentShowAlwaysOn = false;
+      receivedCommandType = 0xFF; // falls through to the generic hold-display renderer
+      lastShowSyncTime = now;
+      disneyDeviceFound = true;
+      Serial.printf("   🌀 [Family 3 fallback] opcode=0x%02X hue=%s\n", opcode,
+                    DISNEY_PALETTE_NAMES[idx]);
+    }
+    return;
+  }
 
   // Check for 0xE9 Show Command Header
   if (len >= 6 && payload[4] == DISNEY_HEADER_SHOW) {

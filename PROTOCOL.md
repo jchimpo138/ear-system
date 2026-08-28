@@ -344,11 +344,33 @@ Duration: 500 ms @ 25 ms interval
 
 ### Direct E9/EA Park Infrastructure Opcodes
 
-Captured from Walt Disney World park infrastructure (Spaceship Earth, HarmonioUS, etc.):
+Captured from Walt Disney World park infrastructure (Spaceship Earth, HarmonioUS, etc.). Unlike the guest/wearable "Family 1" layout above, these broadcast `E9`/`EA` directly as manufacturer-data byte 2 (right after `83 01`), with no `[E1|E2][00]` wrapper in front — so the header sits 2 bytes earlier than Family 1's offset. Bench-confirmed live against a real MagicBand+ (not just captured-and-replayed) via a crafted-payload test rig, in a session that also independently re-derived the Family 1 `Timing Byte` formula's correctness against this same real hardware.
 
 - **`E9 04`**: Park Show Sync Base
 - **`E9 08`** *(Short Form Direct 5-Slot)*: `E9 08 ... 0F [C0] [C1] [C2] [C3] [C4]`
-- **`E9 10`**, **`E9 13`**, **`EA 14`**: Long-format park show sequences (contains `f4 48 82` signature).
+- **`E9 13`**, **`EA 14`**: Long-format park show sequences sharing the same `F4 48 82` byte sequence noted below for `E9 10` — not yet decoded to the same depth.
+
+#### `E9 10` — "Alternating Colors" (bench-confirmed layout)
+
+```
+Offset:  [0]  [1]  [2]     [3]        [4]      [5]      [6]      [7..11]        [12]        [13..21]
+Byte:    83   01   E9      10         00       Timing   0F       5×ColorByte    PatternID   (unmapped)
+```
+
+- **Timing Byte** (offset 5): same encoding/formula as Family 1's Timing Byte (see section 3) — confirmed against a real band holding a `0x0F` byte for exactly the predicted 29.0s (`1.5×15+6.5`).
+- **5×ColorByte** (offset 7–11): five consecutive bytes, each independently addressing one of the real band's 5 physical LEDs, in this order: **Center, NE (top-right), SE (bottom-right), SW (bottom-left), NW (top-left)**. Each byte packs `(Mode << 5) | PaletteIndex` — same two-field split documented above for `E9 05`'s LED-position mask, just with a different meaning in the top 3 bits here. Confirmed one-at-a-time by toggling each byte to `Off` (palette index 29) and back while holding the other four fixed, watching the corresponding physical LED turn dark and back on.
+  - ⚠️ Palette index `31` (`0x1F`) is documented in `research/emcot.txt` line 349 as `11111b = random` — i.e. not a real color, a "pick something random" sentinel. Confirmed live: a slot set to index 31 visibly switches between two different colors ~1s after lighting, with no repeatable second color across retests. Avoid this index in any deterministic test payload.
+  - **Byte 7's own `Mode` field (top 3 bits) selects between two entirely different rendering families** — this matters more than it looks like a throwaway detail:
+    - **`Mode` 5, 6, or 7** ("rainbow family", confirmed identical to each other, mirroring `E9 05`'s own documented high-value fallback design): all 5 `ColorByte`s render independently and simultaneously. Whether they're static or animated is controlled by `PatternID` (below).
+    - **`Mode` 0–4** (includes the real captured default's own mode, `2` — likely the most common real-world case): behaves completely differently. Only **Center's color** renders; NE/SE/SW/NW's bytes are decoded but don't visibly affect this render path (confirmed: isolating any single one of them, or reproducing byte 10's real-capture top3 mismatch in isolation, never reproduced the real band's motion). The real band shows the strip **mostly lit in Center's color, with a single ~1/5-strip dark gap sweeping around it** — not a multi-color parade like the rainbow family. The exact trigger condition for this motion isn't confirmed (a from-scratch isolated single-color test with the real default's own `PatternID` value came back static, so it's not simply "`Mode` 0-4 + this `PatternID` value" either) — this is currently implemented as a default-to-animating assumption in firmware, not a fully decoded mechanism.
+- **`PatternID`** (offset 12): a small enumerated animation-ID byte, not a clean bitfield — tested a community-sourced "high-nibble selects pattern" theory (`research/emcot.txt` line 218: `3 = Palette B Spin`) and it does not hold (`0x35`/`0x3A`/`0x3F` all share high-nibble `3` with the confirmed-spin `0x30`/`0x31` but render static). Confirmed values (**rainbow family only, `Mode` 5-7** — `PatternID`'s effect on `Mode` 0-4 is unconfirmed, see above):
+  - `0x82` — the real captured default's own `PatternID` value — **static** under the rainbow family, each of the 5 LEDs shows its own decoded color, no motion.
+  - `0x30` / `0x31` — **rotating chase**: the 5 assigned colors visit the 5 LED positions in sequence (Center→NE→SE→SW→NW order, confirmed by watching two adjacent colors "chase" each other around the ring). The two values differ only in the low bit and produce opposite rotation directions.
+  - Every other tested value (`0x00, 0x10, 0x20, 0x32-0x35, 0x3A, 0x3F, 0x40, 0x50, 0x60, 0x70, 0x90`) renders static under the rainbow family, same as `0x82`.
+- Real captured example (`research/emcot.txt` line 253, unwrapped): `E9 10 00 0F 0F 54 5D 58 F4 48 82 D1 46 09 0A D0 65 28 21 02` — decodes to Center=Red Orange (`Mode`=2, so the "`Mode` 0-4" render path applies, not the rainbow family), NE=Off, SE=Cyan 4, SW=Red Orange (with a mismatched `Mode`=7 on this one byte only), NW=Pink, `PatternID`=`0x82`, Timing=`0x0F`→29.0s. On real hardware this renders as the strip mostly lit Red Orange with a dark gap sweeping around — bench-confirmed matching between the real band and the ears firmware's implementation of this case.
+- Offsets 13–21 (`D1 46 09 0A D0 65 28 21 02` in the example above): individually toggled to `Off` one at a time with no observed effect on any LED or on vibration — purpose still unknown.
+- The wrapped variant of this opcode (`E1 00 E9 10 00 13 48 97 D0 0E A0 D1 46 06 0F 30 D0 4E 07 B0`, also the only `E9 10` example in the `research/flipper` Magic Band Plus Lights app, itself sourced from the same `emcot.world` community page) does **not** follow this byte layout — its byte 4 (where the `0F` marker sits in every other confirmed E9 command) is `0x48`, not `0x0F`, so it's a genuinely different sub-format, not decoded.
+- Vibration is **not** payload-byte-controlled for `E9 10` — confirmed by grafting `E9 12`'s trailing bytes (which do vibrate) onto an `E9 10` packet with the opcode byte still `10`: no vibration. Changing only the opcode byte from `10`→`12` (same trailing bytes) restored vibration — meaning vibration is gated by the opcode itself (`E9 12` is literally named "Circle With Vibration" in the community notes), not by any specific data byte.
 
 ---
 

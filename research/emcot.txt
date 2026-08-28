@@ -212,8 +212,8 @@ It's possible the same 32 color pallete is used in multiple "functions" but uses
 
 Pattern Codes with the first letter appear to do the following:
 
-0 = Nothing
-1 = Nothing
+E1 00 e9 08 00 f4 0f c0 a4 b9 b9 a4
+E1 00 e9 08 00 f4 0f c0 a4 b9 b9 a4
 2 = 0010 - Middle Only Whitesh
 3 = 0011 - Palette B Spin
 4 = 0100 - Palette A
