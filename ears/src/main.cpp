@@ -271,12 +271,22 @@ volatile bool currentShowAlwaysOn = false;
 // Decodes a Disney show Timing Byte into (duration, always-on).
 // Bit7 ALWAYS_ON, Bit6 SCALER, Bits5-4 FADE_CODE (unused here), Bits3-0 TIME_VAL.
 // Duration = 3.1*TIME_VAL + 5.5 (scaler=1) or 1.5*TIME_VAL + 6.5 (scaler=0) seconds.
+//
+// ALWAYS_ON does NOT mean literally forever on real hardware -- confirmed
+// live (E9 0E, TIME_VAL=3, ALWAYS_ON set) that the real band actually
+// turns off after ~24s, not indefinitely. Only one data point exists so
+// the real formula for ALWAYS_ON's duration isn't known; applying a fixed
+// 24s cap instead of the previous true-forever behavior, which would have
+// left a show running until a new command arrived (unlike the real band).
+#define ALWAYS_ON_CAP_MS 24000
 void applyShowTiming(uint8_t timingByte) {
-  currentShowAlwaysOn = (timingByte & 0x80) != 0;
+  bool alwaysOnFlag = (timingByte & 0x80) != 0;
   bool scaler = (timingByte & 0x40) != 0;
   uint8_t timeVal = timingByte & 0x0F;
   float durationSec = scaler ? (3.1f * timeVal + 5.5f) : (1.5f * timeVal + 6.5f);
-  currentShowDurationMs = (unsigned long)(durationSec * 1000.0f);
+  currentShowAlwaysOn = false; // never treat a show as literally infinite
+  currentShowDurationMs = alwaysOnFlag ? ALWAYS_ON_CAP_MS
+                                        : (unsigned long)(durationSec * 1000.0f);
 }
 
 // --- CC 03 Wake-Ping Scan Boost ---

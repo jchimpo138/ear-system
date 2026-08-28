@@ -84,7 +84,7 @@ Bit Layout (8 bits):
 
 | Field | Bits | Description |
 |---|---|---|
-| **ALWAYS_ON** | 7 | `1` = Force permanent on/latch state (overrides timer). `0` = Timed hold. |
+| **ALWAYS_ON** | 7 | `1` = documented as "permanent on/latch state," but confirmed live it is **not literally infinite on real hardware** — an `E9 0E` example with `ALWAYS_ON` set and `TIME_VAL=3` turned off after ~24s, not indefinitely. Only one data point exists, so the real duration formula for this flag isn't known; firmware applies a fixed 24s cap instead of the previously-assumed true-forever behavior. `0` = Timed hold (normal formula below). |
 | **SCALER** | 6 | `0` = Standard scaler multiplier. `1` = Long-duration multiplier. |
 | **FADE_CODE** | 5–4 | Fade-out duration upon expiry:<br>`00` = 0s (instant off)<br>`01` = 1s smooth fade<br>`10` = 2s smooth fade<br>`11` = 3s smooth fade |
 | **TIME_VAL** | 3–0 | 4-bit integer duration multiplier (0–15). |
@@ -285,6 +285,8 @@ Firmware detects the known "Taste the Rainbow" signature (bytes 2–13 of the pa
 Offset:  [0]  [1]  [2]  [3]  [4]    [5]    [6]       [7]          [8]        [9]
 Byte:    E1   00   E9   0E   00   Timing   0F   (0x40|Color1) (0x40|Color2) VibeByte
 ```
+
+⚠️ **This documented layout appears to be wrong** — 5 real captured examples of `E9 0E` all decode cleanly as the same **5-slot Center/NE/SE/SW/NW palette** used by `E9 09/10/0C` (`(Mode<<5)|PaletteIndex` at offsets 7–11, all `Mode=5`), not a simple 2-color format, and match the reported visuals well (e.g. `Center=Off, ring=mostly Cyan` → "outer ring flashes blue"; alternating `Cyan/White2` → "2-color sparkle blue and white"). Two more bytes vary across examples in ways that look like real parameters but aren't yet decoded: offset 13 (`07/17/19/19/19`) and offset 14 (`00/FB/02/02/0B`), likely a sparkle style/speed selector — not enough examples yet to fit a formula. Offsets 12, 15, 16 are constant (`59, 48, AE`) across every example, likely fixed/structural. **Not yet reflected in firmware**, which still renders `E9 0E` as the old simple on/off strobe — a real gap to fix.
 
 ---
 
