@@ -353,6 +353,7 @@ uint8_t gHue = 0;
 volatile uint8_t receivedCommandType = 0;
 volatile uint8_t showColors5[5][3]; // 5-slot palette RGB matrix
 volatile uint8_t showColors5Count = 5; // how many of the 5 slots are actually valid (0x0C can have fewer)
+volatile unsigned long showBlinkIntervalMs = 50; // per-command blink/strobe rate, see receivedCommandType==0x0E render
 
 // --- Family 3 (Park Infrastructure) E9 10 decode state ---
 // Bench-confirmed against a real MagicBand+ (see PROTOCOL.md sec. 6.1): 5
@@ -420,16 +421,18 @@ void executeDisneyMicrocode() {
     }
     strip.show();
   } else if (receivedCommandType == 0x0E) {
-    // ⚡ STROBE PULSE: alternate showR1/G1/B1/black continuously for the
-    // show's real duration -- same non-blocking throttle pattern. Uses the
-    // current show color rather than hardcoded white so this same branch
-    // can be reused for E9 0C's "Blink White" (sets white) and "Orange
-    // Blink" (sets orange) baked animations, which are visually just this
-    // strobe in a different color.
-    const unsigned long STROBE_INTERVAL_MS = 50;
+    // ⚡ STROBE/BLINK PULSE: alternate showR1/G1/B1/black continuously for
+    // the show's real duration -- same non-blocking throttle pattern. Uses
+    // the current show color and showBlinkIntervalMs (set in
+    // parseDisneyPacket() per command) rather than a single hardcoded rate
+    // so this same branch can be reused for E9 0C's "Blink White" and
+    // "Orange Blink" baked animations, which are visually just this
+    // strobe/blink in a different color and speed -- confirmed live that
+    // the real band's "Blink White" is a much slower ~0.5s on/off blink,
+    // not the fast strobe genuine E9 0E uses.
     static unsigned long lastFrame = 0;
     static bool strobeOn = false;
-    if (millis() - lastFrame >= STROBE_INTERVAL_MS) {
+    if (millis() - lastFrame >= showBlinkIntervalMs) {
       lastFrame = millis();
       strobeOn = !strobeOn;
       if (strobeOn) {
@@ -1290,6 +1293,7 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
     else if (showCmd == 0x0E) {
       showR1 = 255; showG1 = 255; showB1 = 255; // White strobe
       isDualColor = false;
+      showBlinkIntervalMs = 50; // fast strobe, distinct from E9 0C's slower "blink" bakes below
       lastShowSyncTime = now;
       disneyDeviceFound = true;
       Serial.println("   🎨 [Mode 8] Strobe Pulse!");
@@ -1322,6 +1326,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       if (matchesRainbowPrefix && len >= 1 && payload[len - 1] == 0x95) {
         showR1 = 255; showG1 = 255; showB1 = 255; // White
         isDualColor = false;
+        // Confirmed live: the real band's Blink White is a much slower
+        // ~0.5s on/off blink, not the fast strobe genuine E9 0E uses.
+        showBlinkIntervalMs = 500;
         receivedCommandType = 0x0E; // reuse the existing strobe renderer
         Serial.println("   ⚡ [E9 0C] Blink White (known animation signature)");
       } else if (matchesRainbowPrefix) {
@@ -1330,8 +1337,16 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       } else if (matchesOrangeBlink) {
         showR1 = 255; showG1 = 90; showB1 = 0; // Orange
         isDualColor = false;
+        showBlinkIntervalMs = 500;
+        // The real captured Timing Byte (0xEF) has ALWAYS_ON set -- on the
+        // real band this is an alert-style animation meant to hold
+        // indefinitely, but that's not useful for a wearable prop, so
+        // override it with a fixed shutoff instead of respecting the
+        // packet's own always-on flag.
+        currentShowAlwaysOn = false;
+        currentShowDurationMs = 5000;
         receivedCommandType = 0x0E; // reuse the existing strobe renderer
-        Serial.println("   ⚡ [E9 0C] Orange Blink (known animation signature)");
+        Serial.println("   ⚡ [E9 0C] Orange Blink (known animation signature, capped at 5s)");
       } else {
         // Generic fallback: decode whatever slot bytes are present (up to
         // 5, matching showColors5's capacity) as real palette data and
