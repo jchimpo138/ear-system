@@ -334,6 +334,8 @@ Layout (13 bytes):
 [12]     Color Byte: 5-bit Palette Index (bits [4:0])
 ```
 
+⚠️ Offset 12 is relative to wherever the `CF 0B` signature actually starts, which shifts by 2 bytes depending on whether the packet is CID-prefixed or not — firmware detects both cases (checking for the signature at offset 0 and offset 2) but had a real bug where the color byte was read at a hardcoded `payload[12]` regardless of which case matched. Since our own transmitter's broadcast is CID-prefixed (offset-2 case, real color byte at `payload[14]`), this meant the color byte was always read 2 bytes into the all-zero rolling-code section instead — silently showing Cyan (index 0) no matter what color was actually set. Fixed to compute the offset dynamically; confirmed live that a Red (`0x15`) test payload now correctly renders red instead of defaulting to Cyan.
+
 ---
 
 ### CC 03 — Wake Ping
@@ -406,6 +408,12 @@ A second wrapped sub-format, distinct from both the standard wrapped layout abov
 - **Offset 19 has a real effect, but doesn't look like a normal color/pattern parameter.** Its value in every real capture is a constant `0x0E`. Live testing (idx20 held fixed at White in both): `0x0E` (the natural value) shows White, matching idx20 correctly; `0x0D` — a one-decrement, not a color-scale change — shows a completely different color (green) instead of a blend or shift. That behavior looks more like a narrow validity check than a parameter: at its expected value it lets idx20's color render normally, and off that value it seems to trigger some other (possibly hardcoded) fallback — echoing the same "only specific values are recognized" pattern found for the unwrapped format's `PatternID` byte (`0x30`/`0x31` only). Not fully mapped — only two adjacent values tested.
 - A second color (described as "blue or purple") appears alongside idx20's color in some tests; the offset responsible for it is not yet confirmed. Offset 11 (`0x05`→Bright Purple in the `E9 13`/`E9 14`-pink captures, `0x02`→Blue in the `E9 14`-blue capture) is a plausible candidate by the same real-capture-comparison method used to find offset 20, and a live isolated test was built for it, but the result was never reported/confirmed — treat as an untested hypothesis, not a finding.
 - Offsets 6-8, 10, 13-18 tested (individually or in batches) with no observed visual effect so far — likely padding, checksum, or a rolling/anti-replay code, not color or pattern data.
+
+---
+
+### `CD 07` — Unrecognized "Parade Command"
+
+Not decoded — flagged by `research/BLE_Beacon_Ears`'s own `magicband_protocol.py` as *"Newer parade/show command not in our protocol docs. We can't decode the colors but still want the ears to react visibly"* (their code has the same func-code entry, `0xCD07`, but no decode logic either). Firmware detects this exact header (`payload[2]==0xCD && payload[3]==0x07`, checked only after the wrapped `E9` show-command check fails) and renders a deterministic hash-derived color, same philosophy as the Family 3 undecoded-opcode fallback. Deliberately scoped to this exact header rather than "any unrecognized packet" — an earlier draft of this fallback caught anything that wasn't an `E9` show command and fired constantly on ordinary background traffic from a real band just being nearby (idle/presence broadcasts, not actual show events), which isn't useful; `CD 07` specifically is framed as a real show event.
 
 ---
 

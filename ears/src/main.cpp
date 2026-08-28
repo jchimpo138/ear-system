@@ -396,27 +396,68 @@ void executeDisneyMicrocode() {
       strip.show();
     }
   } else if (receivedCommandType == 0xC4) {
-    // 🗿 FAB 50 STATUE: golden magical swirl, same non-blocking pattern.
-    // `swirl` is static so the trail position keeps advancing frame-to-frame
-    // instead of resetting inside a blocking loop.
-    const unsigned long FRAME_INTERVAL_MS = 60;
+    // 🗿 FAB 50 STATUE: golden swirl with rhythmic sparkles and a two-beat
+    // breathing pulse, adapted from the Adafruit reference renderer's own
+    // statue animation (research/BLE_Beacon_Ears, _state_statue_beacon())
+    // -- their richer version syncs sparkle probability to the pulse peaks
+    // and has a proper fade-in/fade-out envelope, versus our previous
+    // simple fading-trail swirl. Their design uses a separate center pixel
+    // per physical "zone" (their dual-jewel hardware); dropped here since
+    // our linear strip has no equivalent -- the whole strip acts as their
+    // "outer ring."
+    const unsigned long FRAME_INTERVAL_MS = 30;
     static unsigned long lastFrame = 0;
-    static int swirl = 0;
     if (millis() - lastFrame >= FRAME_INTERVAL_MS) {
       lastFrame = millis();
+      float t = (millis() - lastShowSyncTime) / 1000.0f;
+
+      // Fade-in over the first 0.3s, fade-out over the last 0.3s of the
+      // 4.0s show duration (matches currentShowDurationMs for this command).
+      float fadeEnvelope;
+      if (t < 0.3f) fadeEnvelope = t / 0.3f;
+      else if (t > 3.7f) fadeEnvelope = max(0.0f, (4.0f - t) / 0.3f);
+      else fadeEnvelope = 1.0f;
+
+      // Two-beat pulse: dim at t=0/2/4, peak at t=1/3. Range kept to
+      // 0.5-1.0 so the swirl never fully disappears between peaks.
+      float pulse = 0.75f + 0.25f * sinf(2.0f * PI * t / 2.0f - PI / 2.0f);
+      float envelope = fadeEnvelope * pulse;
+
+      // ~1.5 revolutions/sec, continuous (no reset between beats).
+      float phase = t * 1.5f;
+      float headPos = fmodf(phase * NUM_LEDS, (float)NUM_LEDS);
+      if (headPos < 0) headPos += NUM_LEDS;
+
+      const float goldBright[3] = {255, 180, 30};
+      const float goldDim[3] = {120, 80, 10};
+      const float sparkleWhite[3] = {255, 255, 200};
+
       for (int i = 0; i < NUM_LEDS; i++) {
-        uint32_t c = strip.getPixelColor(i);
-        uint8_t r = ((c >> 16) & 0xFF) * 0.75;
-        uint8_t g = ((c >> 8) & 0xFF) * 0.75;
-        uint8_t b = (c & 0xFF) * 0.75;
-        strip.setPixelColor(i, strip.Color(r, g, b));
+        // Sparkle probability rises slightly on pulse peaks so sparkles
+        // cluster rhythmically with the beat instead of feeling random.
+        float sparklePhase = t * 12.0f + i * 1.7f;
+        if (sinf(sparklePhase) > 0.88f - 0.06f * pulse) {
+          strip.setPixelColor(i, strip.Color((uint8_t)(sparkleWhite[0] * envelope),
+                                              (uint8_t)(sparkleWhite[1] * envelope),
+                                              (uint8_t)(sparkleWhite[2] * envelope)));
+          continue;
+        }
+        float distance = fmodf(headPos - i, (float)NUM_LEDS);
+        if (distance < 0) distance += NUM_LEDS;
+        if (distance < 1.0f) {
+          strip.setPixelColor(i, strip.Color((uint8_t)(goldBright[0] * envelope),
+                                              (uint8_t)(goldBright[1] * envelope),
+                                              (uint8_t)(goldBright[2] * envelope)));
+        } else if (distance < 3.0f) {
+          float fade = 1.0f - (distance / 3.0f);
+          strip.setPixelColor(i, strip.Color((uint8_t)(goldDim[0] * envelope * fade),
+                                              (uint8_t)(goldDim[1] * envelope * fade),
+                                              (uint8_t)(goldDim[2] * envelope * fade)));
+        } else {
+          strip.setPixelColor(i, 0);
+        }
       }
-      int p1 = swirl % NUM_LEDS;
-      int p2 = (swirl + (NUM_LEDS / 2)) % NUM_LEDS;
-      strip.setPixelColor(p1, strip.Color(255, 215, 0)); // Gold
-      strip.setPixelColor(p2, strip.Color(255, 255, 255)); // White
       strip.show();
-      swirl++;
     }
   } else if (receivedCommandType == 0x09) {
     // 🎨 5-COLOR PALETTE RING: 5 distinct color segments
@@ -446,6 +487,24 @@ void executeDisneyMicrocode() {
       strip.setPixelColor(i, strip.Color(0, 0, 0, 255));
     }
     strip.show();
+  } else if (receivedCommandType == 0xFA) {
+    // 🎡 E9 0E 5-COLOR WHEEL: real decoded colors (showColors5) rotating
+    // in discrete jumps, same mechanism as E9 0C's "Taste the Rainbow"
+    // (0xFC below) -- confirmed via the Adafruit reference renderer using
+    // the identical approach for its generic "animation" bucket (E9 0B/
+    // 0E/0F), just fed real payload colors instead of a hardcoded list.
+    static const float ROTATE_PERIOD_S = 2.0f;
+    float phase = (float)millis() / 1000.0f / ROTATE_PERIOD_S;
+    int n = showColors5Count > 0 ? showColors5Count : 1;
+    for (int i = 0; i < NUM_LEDS; i++) {
+      float angleFrac = (float)i / NUM_LEDS;
+      float colorPhase = phase + angleFrac;
+      int slot = ((int)(colorPhase * n)) % n;
+      if (slot < 0) slot += n;
+      strip.setPixelColor(i, strip.Color(showColors5[slot][0], showColors5[slot][1],
+                                          showColors5[slot][2]));
+    }
+    strip.show();
   } else if (receivedCommandType == 0x0E) {
     // ⚡ STROBE/BLINK PULSE: alternate showR1/G1/B1/black continuously for
     // the show's real duration -- same non-blocking throttle pattern. Uses
@@ -454,8 +513,8 @@ void executeDisneyMicrocode() {
     // so this same branch can be reused for E9 0C's "Blink White" and
     // "Orange Blink" baked animations, which are visually just this
     // strobe/blink in a different color and speed -- confirmed live that
-    // the real band's "Blink White" is a much slower ~0.5s on/off blink,
-    // not the fast strobe genuine E9 0E uses.
+    // the real band's "Blink White" is a much slower ~0.5s on/off blink.
+    // (Genuine E9 0E no longer uses this branch -- see 0xFA above.)
     static unsigned long lastFrame = 0;
     static bool strobeOn = false;
     if (millis() - lastFrame >= showBlinkIntervalMs) {
@@ -1056,11 +1115,22 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
   }
 
   // 1. STARLIGHT BUBBLE WAND CAST DETECTION (0xCF 0x0B)
-  if ((payload[0] == 0xCF && payload[1] == 0x0B) ||
-      (payload[2] == 0xCF && payload[3] == 0x0B)) {
+  bool wandAtOffset0 = (payload[0] == 0xCF && payload[1] == 0x0B);
+  bool wandAtOffset2 = (payload[2] == 0xCF && payload[3] == 0x0B);
+  if (wandAtOffset0 || wandAtOffset2) {
     lastPacketRxTime = now;
     receivedCommandType = 0xC1;
-    uint8_t wandColIdx = (len >= 13) ? (payload[12] & 0x1F) : 0;
+    // Color byte sits at local offset 12 of the 13-byte CF 0B signature
+    // (PROTOCOL.md) -- but that's relative to wherever CF actually starts,
+    // which shifts by 2 depending on which branch matched above. This was
+    // previously hardcoded to payload[12] unconditionally, which is only
+    // correct for the offset-0 case; our own transmitter's real broadcast
+    // is CID-prefixed (matches offset-2), so the real color byte is at
+    // payload[14] -- reading payload[12] instead landed 2 bytes into the
+    // all-zero rolling-code section, silently ignoring whatever color was
+    // actually set regardless of the transmitter's own color adjustment.
+    int colorOffset = wandAtOffset2 ? 14 : 12;
+    uint8_t wandColIdx = (len > (unsigned)colorOffset) ? (payload[colorOffset] & 0x1F) : 0;
     CRGB wandCol = DISNEY_PALETTE[wandColIdx];
     showR1 = wandCol.r;
     showG1 = wandCol.g;
@@ -1319,15 +1389,29 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       disneyDeviceFound = true;
       Serial.println("   🎨 [Mode 7] 5-Color Palette Ring!");
     }
-    // 0x0E: Strobe Pulse (Mode 8 on Transmitter) -- genuinely a strobe,
-    // matches PROTOCOL.md's documented E9 0E layout.
-    else if (showCmd == 0x0E) {
-      showR1 = 255; showG1 = 255; showB1 = 255; // White strobe
-      isDualColor = false;
-      showBlinkIntervalMs = 50; // fast strobe, distinct from E9 0C's slower "blink" bakes below
+    // 0x0E: PROTOCOL.md's documented "Strobe Pulse" 2-color layout turned
+    // out to be wrong -- 5 real captured examples all decode cleanly as
+    // the same 5-slot Center/NE/SE/SW/NW palette used by E9 09/10/0C
+    // (offsets 9-13 here), matching their reported visuals well (e.g.
+    // Center=Off + ring=Cyan -> "outer ring flashes blue"). Rendered with
+    // the same discrete color-wheel rotation adapted from the Adafruit
+    // reference renderer's generic "animation" handler (research/
+    // BLE_Beacon_Ears, _state_animation()) -- same mechanism as E9 0C's
+    // "Taste the Rainbow" fix, fed real decoded colors instead of a
+    // hardcoded rainbow list.
+    else if (showCmd == 0x0E && len >= 14) {
+      for (int s = 0; s < 5; s++) {
+        uint8_t idx = payload[9 + s] & 0x1F;
+        CRGB col = DISNEY_PALETTE[idx];
+        showColors5[s][0] = col.r;
+        showColors5[s][1] = col.g;
+        showColors5[s][2] = col.b;
+      }
+      showColors5Count = 5;
+      receivedCommandType = 0xFA; // 5-slot color-wheel rotation
       lastShowSyncTime = now;
       disneyDeviceFound = true;
-      Serial.println("   🎨 [Mode 8] Strobe Pulse!");
+      Serial.println("   🎨 [Mode 8] E9 0E: 5-color wheel rotation");
     }
     // 0x0C: "Animation Codes" -- per emcot.txt/research/BLE_Beacon_Ears,
     // several known real captures of this opcode ("Taste the Rainbow",
@@ -1472,5 +1556,33 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       disneyDeviceFound = true;
       Serial.printf("   🎨 Generic Show Command 0x%02X Activated!\n", showCmd);
     }
+  } else if (len >= 4 && payload[2] == 0xCD && payload[3] == 0x07) {
+    // CD 07: a "parade/show command not in our protocol docs" per
+    // research/BLE_Beacon_Ears's own comment (its magicband_protocol.py
+    // has the same func-code entry but also can't decode it). Narrowly
+    // scoped to this exact header -- an earlier version of this fallback
+    // caught *any* non-E9 packet and fired constantly on ordinary
+    // background traffic from a real band just being nearby (e.g. idle/
+    // presence broadcasts), which isn't what we want; CD 07 specifically
+    // is framed as an actual show event, not routine idle chatter. Same
+    // hash-derived-color fallback as the Family 3 undecoded-opcode case.
+    lastPacketRxTime = now; // missing from an earlier version of this fix -- without it, this path bypassed the debounce other branches get
+    uint16_t seed = 0;
+    for (uint16_t i = 0; i < len; i++) {
+      seed = (seed * 31 + payload[i]) & 0xFFFF;
+    }
+    uint8_t idx = seed % 32;
+    if (idx == 29) idx = (idx + 1) % 32; // never land on "Off" (black)
+    CRGB col = DISNEY_PALETTE[idx];
+    showR1 = col.r;
+    showG1 = col.g;
+    showB1 = col.b;
+    isDualColor = false;
+    currentShowDurationMs = 4000;
+    currentShowAlwaysOn = false;
+    receivedCommandType = 0xFF; // generic hold-display renderer
+    lastShowSyncTime = now;
+    disneyDeviceFound = true;
+    Serial.printf("   🌀 [CD 07 Parade Command] hue=%s\n", DISNEY_PALETTE_NAMES[idx]);
   }
 }
