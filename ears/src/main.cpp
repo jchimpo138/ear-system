@@ -552,21 +552,24 @@ void executeDisneyMicrocode() {
     }
     strip.show();
   } else if (receivedCommandType == 0xFE) {
-    // 🔴 FAMILY 3 PARK SHOW, top3 0-4 (single-color chase): the real band
-    // showed only Center's own color, mostly lit, with a single ~1/5-strip
-    // dark gap sweeping around it -- not a small lit dot on a dark
-    // background like the first attempt at this had it (backwards). See
-    // the comment in parseDisneyPacket() above for why only Center's color
-    // is used here.
+    // 🔴 FAMILY 3 PARK SHOW, top3 0-4 (background + chaser): Center's color
+    // fills the strip and NE's color sweeps around it as a moving ~1/5-strip
+    // chaser -- confirmed on a real band for both E9 10 (whose real capture
+    // has NE=Off, which is why that case reads as a dark gap sweeping a lit
+    // background) and E9 13 (whose captures have real NE colors, producing
+    // a colored chaser instead). Same two-parameter model for both opcodes,
+    // just different NE values in each real-world example.
     const unsigned long STEP_MS = 40;
     const int GAP_WIDTH = NUM_LEDS / 5;
     int pos = (int)((millis() / STEP_MS) % NUM_LEDS);
+    uint32_t chaserColor = strip.Color(showColorsPark5[1][0], showColorsPark5[1][1],
+                                        showColorsPark5[1][2]);
     for (int i = 0; i < NUM_LEDS; i++) {
       strip.setPixelColor(i, strip.Color(showR1, showG1, showB1));
     }
     for (int d = 0; d < GAP_WIDTH; d++) {
       int i = (pos + d) % NUM_LEDS;
-      strip.setPixelColor(i, 0);
+      strip.setPixelColor(i, chaserColor);
     }
     strip.show();
   } else {
@@ -1023,7 +1026,10 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
     // in motion. Rendered as that: NE/SE/SW/NW's bytes are decoded (in
     // case a future session figures out what they're for) but not used by
     // this specific render path.
-    if (opcode == 0x10 && len >= 13) {
+    // E9 13 (unwrapped) confirmed to share this exact same byte layout and
+    // Timing Byte formula -- see PROTOCOL.md sec. 6.1's E9 13 addendum --
+    // so it reuses this same decode/render path rather than duplicating it.
+    if ((opcode == 0x10 || opcode == 0x13) && len >= 13) {
       applyShowTiming(payload[5]);
       for (int s = 0; s < 5; s++) {
         uint8_t idx = payload[7 + s] & 0x1F;
@@ -1040,8 +1046,8 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
         parkSpin = (parkPatternId == 0x30 || parkPatternId == 0x31);
         parkSpinReverse = (parkPatternId & 0x01) != 0;
         receivedCommandType = 0x10;
-        Serial.printf("   🎡 [E9 10] top3=%d pattern=0x%02X spin=%s timing=%lums\n",
-                      centerTop3, parkPatternId, parkSpin ? "true" : "false",
+        Serial.printf("   🎡 [E9 %02X] top3=%d pattern=0x%02X spin=%s timing=%lums\n",
+                      opcode, centerTop3, parkPatternId, parkSpin ? "true" : "false",
                       currentShowDurationMs);
       } else {
         // Top3 0-4: single moving dot of just Center's real color.
@@ -1049,16 +1055,16 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
         showG1 = showColorsPark5[0][1];
         showB1 = showColorsPark5[0][2];
         receivedCommandType = 0xFE; // single-dot chase renderer
-        Serial.printf("   🎡 [E9 10] top3=%d single-color chase, color=%s "
+        Serial.printf("   🎡 [E9 %02X] top3=%d single-color chase, color=%s "
                       "timing=%lums\n",
-                      centerTop3, DISNEY_PALETTE_NAMES[payload[7] & 0x1F],
+                      opcode, centerTop3, DISNEY_PALETTE_NAMES[payload[7] & 0x1F],
                       currentShowDurationMs);
       }
       lastShowSyncTime = now;
       disneyDeviceFound = true;
     } else {
-      // Not yet decoded (E9 04, E9 13, EA 14, E9 08 short-form, etc.) --
-      // render a deterministic hash-derived color instead of doing nothing,
+      // Not yet decoded (E9 04, EA 14, E9 08 short-form, etc.) -- render a
+      // deterministic hash-derived color instead of doing nothing,
       // same philosophy as Adafruit's own reference renderer for these
       // exact opcodes (see research/BLE_Beacon_Ears -- their
       // _show_command_generic_path()): different captures still look
