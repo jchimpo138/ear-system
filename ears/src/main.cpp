@@ -420,8 +420,12 @@ void executeDisneyMicrocode() {
     }
     strip.show();
   } else if (receivedCommandType == 0x0E) {
-    // ⚡ STROBE PULSE: alternate white/black continuously for the show's
-    // real duration -- same non-blocking throttle pattern.
+    // ⚡ STROBE PULSE: alternate showR1/G1/B1/black continuously for the
+    // show's real duration -- same non-blocking throttle pattern. Uses the
+    // current show color rather than hardcoded white so this same branch
+    // can be reused for E9 0C's "Blink White" (sets white) and "Orange
+    // Blink" (sets orange) baked animations, which are visually just this
+    // strobe in a different color.
     const unsigned long STROBE_INTERVAL_MS = 50;
     static unsigned long lastFrame = 0;
     static bool strobeOn = false;
@@ -429,8 +433,18 @@ void executeDisneyMicrocode() {
       lastFrame = millis();
       strobeOn = !strobeOn;
       if (strobeOn) {
+        // Pure white uses the SK6812's dedicated white channel (4-arg
+        // Color(), matching the battery gauge's reference marker) instead
+        // of faking it with R=G=B=255 -- the 3-arg form always encodes
+        // W=0, so that would drive all 3 color LEDs instead of the
+        // cleaner/more efficient real white LED. Any other color (e.g.
+        // Orange Blink) isn't representable on the white channel, so it
+        // still goes through R/G/B as before.
+        bool isPureWhite = (showR1 == 255 && showG1 == 255 && showB1 == 255);
+        uint32_t c = isPureWhite ? strip.Color(0, 0, 0, 255)
+                                  : strip.Color(showR1, showG1, showB1);
         for (int i = 0; i < NUM_LEDS; i++) {
-          strip.setPixelColor(i, strip.Color(255, 255, 255));
+          strip.setPixelColor(i, c);
         }
       } else {
         strip.clear();
@@ -1282,23 +1296,42 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
     }
     // 0x0C: "Animation Codes" -- per emcot.txt/research/BLE_Beacon_Ears,
     // several known real captures of this opcode ("Taste the Rainbow",
-    // "Blink White") are firmware-baked animation programs where the bytes
-    // are opaque program IDs, NOT real palette data -- decoding "Taste the
-    // Rainbow"'s actual bytes via the normal (mode<<5)|color formula gives
-    // a scrambled non-rainbow sequence (confirmed: Off/Lavender/White/Gold/
-    // Purple/Lime/Cyan/Pink), which is why treating 0x0C uniformly as a
-    // white strobe (the old behavior here) looked wrong on real hardware.
-    // Detect the known signature and reuse the existing Rainbow Wave HSV
-    // cycle instead; anything else falls back to a genuine multi-slot
-    // palette decode + rotation, same philosophy as the Adafruit reference
-    // renderer's two-tier approach for this exact opcode.
+    // "Blink White", "Orange Blink") are firmware-baked animation programs
+    // where the bytes are opaque program IDs, NOT real palette data --
+    // decoding "Taste the Rainbow"'s actual bytes via the normal
+    // (mode<<5)|color formula gives a scrambled non-rainbow sequence
+    // (confirmed: Off/Lavender/White/Gold/Purple/Lime/Cyan/Pink), which is
+    // why treating 0x0C uniformly as a white strobe (the old behavior
+    // here) looked wrong on real hardware. Detect known signatures and
+    // route to the right specific render instead; anything else falls
+    // back to a genuine multi-slot palette decode + rotation -- same
+    // philosophy as the Adafruit reference renderer's own two-tier
+    // approach for this exact opcode.
     else if (showCmd == 0x0C) {
+      // Rainbow and Blink White share the exact same 12-byte prefix in
+      // their real captures -- Adafruit's own reference renderer
+      // disambiguates them by the payload's last byte (0x95 = Blink White,
+      // anything else including the real 0xB0 = Rainbow); same approach
+      // here.
       static const uint8_t RAINBOW_SIG[12] = {0xE1, 0x00, 0xE9, 0x0C, 0x00, 0x0F,
                                                0x0F, 0x5D, 0x46, 0x5B, 0xF0, 0x05};
-      bool isKnownRainbow = (len >= 14) && (memcmp(payload + 2, RAINBOW_SIG, 12) == 0);
-      if (isKnownRainbow) {
+      static const uint8_t ORANGE_BLINK_SIG[12] = {0xE1, 0x00, 0xE9, 0x0C, 0x00, 0xEF,
+                                                    0x0F, 0x4F, 0x4F, 0x5B, 0xF0, 0xFB};
+      bool matchesRainbowPrefix = (len >= 14) && (memcmp(payload + 2, RAINBOW_SIG, 12) == 0);
+      bool matchesOrangeBlink = (len >= 14) && (memcmp(payload + 2, ORANGE_BLINK_SIG, 12) == 0);
+      if (matchesRainbowPrefix && len >= 1 && payload[len - 1] == 0x95) {
+        showR1 = 255; showG1 = 255; showB1 = 255; // White
+        isDualColor = false;
+        receivedCommandType = 0x0E; // reuse the existing strobe renderer
+        Serial.println("   ⚡ [E9 0C] Blink White (known animation signature)");
+      } else if (matchesRainbowPrefix) {
         receivedCommandType = 0xFC; // known baked "Taste the Rainbow" animation
         Serial.println("   🌈 [E9 0C] Taste the Rainbow (known animation signature)");
+      } else if (matchesOrangeBlink) {
+        showR1 = 255; showG1 = 90; showB1 = 0; // Orange
+        isDualColor = false;
+        receivedCommandType = 0x0E; // reuse the existing strobe renderer
+        Serial.println("   ⚡ [E9 0C] Orange Blink (known animation signature)");
       } else {
         // Generic fallback: decode whatever slot bytes are present (up to
         // 5, matching showColors5's capacity) as real palette data and
