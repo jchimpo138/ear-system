@@ -96,6 +96,8 @@ Wearable BLE-controlled LED Mickey ears headband, built around a Seeed XIAO nRF5
 - Four SK6812 pixels positioned around the ring wall
 - Front/rear LED sub-assemblies bench-built before installation
 
+**Firmware role (planned):** these 4 fiber-fed pixels are the functional stand-in for the real MagicBand+'s single **Center** LED (per PROTOCOL.md's `E9 09`/`E9 10` 5-position layouts) — not part of the outer quadrant ring. Since the ear enclosure is a circle, once this is physically built the firmware can map effects onto real **Center + NE/SE/SW/NW quadrant** positions instead of the current placeholder approach of just dividing the linear `NUM_LEDS` strip into equal zones with no real spatial meaning (see `showColors5`/`showColorsPark5` in `ears/src/main.cpp`). Not yet implemented — blocked on the physical LED count/position being finalized, same as the standing `NUM_LEDS` placeholder.
+
 ---
 
 ## LED Spec

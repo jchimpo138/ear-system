@@ -1172,9 +1172,15 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
     }
     // 0x09: 5-Color Palette Ring (Mode 7 on Transmitter)
     // Same 2-byte sub-header issue as 0x08 (see note above): the 5 palette
-    // slots (TL,BL,BR,TR,C) start at offset 9, not 7 -- the old offset read
-    // the timing byte and 0x0F signature as the first two "colors" and
-    // missed the last two slots (TR, center) entirely.
+    // slots start at offset 9, not 7 -- the old offset read the timing byte
+    // and 0x0F signature as the first two "colors" and missed the last two
+    // slots entirely. Order is Center, NE, SE, SW, NW -- bench-confirmed
+    // against a real MagicBand+ (see PROTOCOL.md's E9 09 section), which
+    // corrected the community wiki's unverified "TL, BL, BR, TR, Center"
+    // labeling. Not that it matters functionally here, since these 5 bytes
+    // just fill 5 sequential zones of the linear strip with no attempt at
+    // real spatial correspondence (see CLAUDE.md's Fiber Optic Subsystem
+    // section for the planned future upgrade to real quadrant positions).
     else if (showCmd == 0x09 && len >= 14) {
       for (int s = 0; s < 5; s++) {
         uint8_t cIdx = payload[9 + s] & 0x1F;

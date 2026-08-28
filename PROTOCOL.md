@@ -236,16 +236,13 @@ Details:
 ### E9 09 — 5-Color Ring Palette
 
 ```
-Offset:  [0]  [1]  [2]  [3]  [4]    [5]    [6]    [7]    [8]    [9]    [10]   [11]   [12]
-Byte:    E1   00   E9   09   00   Timing   0F     TL     BL     BR     TR     C   VibeByte
+Offset:  [0]  [1]  [2]  [3]  [4]    [5]    [6]    [7]      [8]    [9]    [10]   [11]   [12]
+Byte:    E1   00   E9   09   00   Timing   0F   Center     NE     SE     SW     NW   VibeByte
 
-Details:
-- TL (Top-Left):     0xA0 | (Idx & 0x1F)
-- BL (Bottom-Left):  0xA0 | (Idx & 0x1F)
-- BR (Bottom-Right): 0xA0 | (Idx & 0x1F)
-- TR (Top-Right):    0xA0 | (Idx & 0x1F)
-- C  (Center):       0xA0 | (Idx & 0x1F)
+Details: each color byte = 0xA0 | (PaletteIdx & 0x1F)
 ```
+
+⚠️ **Order corrected from an earlier community-sourced "TL, BL, BR, TR, Center" labeling** (from `research/emcot.txt`, also copied uncritically into the Adafruit reference project's `build_five_color()`) — bench-confirmed against a real MagicBand+ via the same one-at-a-time isolation testing used for `E9 10`: the actual order is **Center, NE, SE, SW, NW**, identical to `E9 10`'s confirmed order. Neither emcot.txt nor Adafruit had actually tested this ordering against real hardware; both just repeated the same unverified label. This is a good example of why [[protocol_md_confidence_level]] applies even to details other community references agree on — agreement between two unverified sources isn't verification.
 
 ---
 
@@ -359,6 +356,7 @@ Byte:    83   01   E9      10         00       Timing   0F       5×ColorByte   
 
 - **Timing Byte** (offset 5): same encoding/formula as Family 1's Timing Byte (see section 3) — confirmed against a real band holding a `0x0F` byte for exactly the predicted 29.0s (`1.5×15+6.5`).
 - **5×ColorByte** (offset 7–11): five consecutive bytes, each independently addressing one of the real band's 5 physical LEDs, in this order: **Center, NE (top-right), SE (bottom-right), SW (bottom-left), NW (top-left)**. Each byte packs `(Mode << 5) | PaletteIndex` — same two-field split documented above for `E9 05`'s LED-position mask, just with a different meaning in the top 3 bits here. Confirmed one-at-a-time by toggling each byte to `Off` (palette index 29) and back while holding the other four fixed, watching the corresponding physical LED turn dark and back on.
+  - **`E9 09` uses this exact same order** (Center, NE, SE, SW, NW) — bench-confirmed by the same one-at-a-time isolation method (see `E9 09`'s section above). The two opcodes turned out to share a byte-order convention after all, once `E9 09`'s previously-uncorroborated documented order was actually tested against real hardware.
   - ⚠️ Palette index `31` (`0x1F`) is documented in `research/emcot.txt` line 349 as `11111b = random` — i.e. not a real color, a "pick something random" sentinel. Confirmed live: a slot set to index 31 visibly switches between two different colors ~1s after lighting, with no repeatable second color across retests. Avoid this index in any deterministic test payload.
   - **Byte 7's own `Mode` field (top 3 bits) selects between two entirely different rendering families** — this matters more than it looks like a throwaway detail:
     - **`Mode` 5, 6, or 7** ("rainbow family", confirmed identical to each other, mirroring `E9 05`'s own documented high-value fallback design): all 5 `ColorByte`s render independently and simultaneously. Whether they're static or animated is controlled by `PatternID` (below).
