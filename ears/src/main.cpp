@@ -522,6 +522,34 @@ void executeDisneyMicrocode() {
       strip.setPixelColor(i, strip.Color(rB, gB, bB));
     }
     strip.show();
+  } else if (receivedCommandType == 0x14) {
+    // ⚡ E9 14 FAST FLICKER: same two-color (Center/NE-equivalent) model as
+    // E9 10/13's background+chaser render, but bench-confirmed much faster
+    // and less predictable than their steady sweeping chaser -- rendered
+    // as a fast random flicker between showR1/G1/B1 and showR2/G2/B2
+    // across 5 equal zones (same zone convention as 0x09/0x10/0x13) rather
+    // than a moving gap, since that read as visibly wrong for this command.
+    {
+      const unsigned long FRAME_INTERVAL_MS = 90;
+      static unsigned long lastFrame = 0;
+      static uint8_t zoneState = 0; // bit per zone: 1 = show color2 this frame
+      if (millis() - lastFrame >= FRAME_INTERVAL_MS) {
+        lastFrame = millis();
+        zoneState = random(32);
+      }
+      int segSize = NUM_LEDS / 5;
+      for (int s = 0; s < 5; s++) {
+        bool useColor2 = (zoneState >> s) & 0x01;
+        uint32_t c = useColor2 ? strip.Color(showR2, showG2, showB2)
+                                : strip.Color(showR1, showG1, showB1);
+        int startIdx = s * segSize;
+        int count = (s == 4) ? (NUM_LEDS - startIdx) : segSize;
+        for (int i = startIdx; i < startIdx + count; i++) {
+          strip.setPixelColor(i, c);
+        }
+      }
+      strip.show();
+    }
   } else if (receivedCommandType == 0x10) {
     // 🎡 FAMILY 3 PARK SHOW (E9 10 "Alternating Colors"): 5 independently
     // colored zones split across the strip -- the real MagicBand+ has 5
@@ -1241,12 +1269,42 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
                     DISNEY_PALETTE_NAMES[c1], DISNEY_PALETTE_NAMES[c2],
                     currentShowDurationMs);
     }
+    // 0x14: same Center/NE two-color model as the unwrapped E9 10/13
+    // "background+chaser" render (see PROTOCOL.md sec. 6), same byte
+    // offsets as every other wrapped command (Timing at payload[7],
+    // colors starting at payload[9]) -- but bench-confirmed to animate
+    // much faster and less predictably than E9 10/13's steady sweeping
+    // chaser, closer to a fast random flicker between the two colors than
+    // a moving gap. Rendered as that instead of forcing it through the
+    // same deterministic-sweep renderer, which looked visibly wrong for
+    // this command.
+    else if (showCmd == 0x14 && len >= 11) {
+      uint8_t c1 = payload[9] & 0x1F;
+      uint8_t c2 = payload[10] & 0x1F;
+      CRGB col1 = DISNEY_PALETTE[c1];
+      CRGB col2 = DISNEY_PALETTE[c2];
+      showR1 = col1.r; showG1 = col1.g; showB1 = col1.b;
+      showR2 = col2.r; showG2 = col2.g; showB2 = col2.b;
+      lastShowSyncTime = now;
+      disneyDeviceFound = true;
+      Serial.printf("   🎨 [E9 14] Flicker: %s / %s over %lums\n",
+                    DISNEY_PALETTE_NAMES[c1], DISNEY_PALETTE_NAMES[c2],
+                    currentShowDurationMs);
+    }
     // Fallback: Any other valid show command
     else {
       uint8_t c1 = (len >= 10) ? (payload[9] & 0x1F) : 0;
       CRGB col = DISNEY_PALETTE[c1];
       showR1 = col.r; showG1 = col.g; showB1 = col.b;
       isDualColor = false;
+      // Explicitly reset to the generic hold-display renderer rather than
+      // leaving receivedCommandType at the raw showCmd value: a wrapped
+      // packet whose showCmd happens to literally be 0x10 or 0x13 (both
+      // real, confirmed opcodes -- just ones this wrapped-format dispatch
+      // doesn't have its own handler for) would otherwise fall through to
+      // the Family 3 E9 10/13 render branches instead, which expect
+      // showColorsPark5 to be populated and would render stale/wrong data.
+      receivedCommandType = 0xFF;
       lastShowSyncTime = now;
       disneyDeviceFound = true;
       Serial.printf("   🎨 Generic Show Command 0x%02X Activated!\n", showCmd);

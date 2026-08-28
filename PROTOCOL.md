@@ -379,6 +379,13 @@ Bench-confirmed against a real MagicBand+: the same `[Center, NE, SE, SW, NW]` `
 - The animation consistently reserves a fixed **~4.5–5s "hold last frame, then hard-cut" tail** at the end of the show, regardless of total duration — confirmed across four different total durations (6.5–30.3s predicted range). The visible motion itself scales with the Timing-Byte-commanded total (`motion_duration ≈ total_duration − ~4.5s`), so the overall show length is genuinely Timing-Byte-controlled; it's specifically this tail behavior that's fixed and indifferent to `FADE_CODE`.
 - This example's `Mode` (2, from `Center`'s byte `0x40`) uses the same background+chaser render as `E9 10`'s `Mode` 0-4 — see that section above. Unlike `E9 10`'s real default (whose NE happens to be Off), this capture's NE is a real color (Blue 2), which is what revealed that NE controls the chaser's color rather than the chaser always being a dark gap.
 
+#### `E9 14` (wrapped) — same Center/NE two-color model as E9 10/13, but a fast flicker instead of a steady chaser
+
+Bench-confirmed against a real MagicBand+, in the standard **wrapped** layout (`[E1/E2][00][E9][14][00][Timing][0F][Center][NE]...`, Timing at offset 7, colors starting at offset 9 — same convention as `E9 05/06/08/09`), not the unwrapped Family 3 layout `E9 10`/`E9 13` use. Real captured example: `E2 00 E9 14 00 42 0F 55 5B 58 F4 48 82 D0 65 1B D1 46 2A 02 30 7B 5D B0` → Center=Red, NE=White.
+
+- Same underlying two-color model as `E9 10`/`E9 13`'s `Mode` 0-4 (confirmed via isolation: setting all colors but NE to Off still showed nothing until NE itself had a real value) — but the animation is **much faster and less predictable** than their steady sweeping chaser, closer to a fast random flicker between the two colors than a moving gap. Implemented as a fast (~90ms) 5-zone random flicker between Center and NE rather than reusing the sweep renderer, which looked visibly wrong for this command.
+- Other real captures of this opcode seen (`E1 00 E9 14 00 0C D0 37 F0 D2 3D 05 0C 0C 0E EC 89 83 51 0E EE 0C 3D B0`, described as "pink pulse, hard cutoff, fades in") do **not** match this layout at all — byte 6 isn't the expected `0F` marker, so like the wrapped `E9 10`/`E9 13` examples, this is a separate undecoded sub-format, not a contradiction of the model above.
+
 ---
 
 ## 7. Custom Sub-Protocol (`AA 42`)
