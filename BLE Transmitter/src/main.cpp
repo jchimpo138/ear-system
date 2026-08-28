@@ -222,9 +222,18 @@ void broadcastStatueBeacon() {
 }
 
 void broadcastWandCast() {
-  // Starlight Bubble Wand Cast (Cyan Spell)
+  // Starlight Bubble Wand Cast. Was hardcoded to all-zero trailing bytes
+  // (always "Cyan Spell" regardless of color1Idx), while printStatus()'s
+  // Mode 9 display printed color1Idx as if it were the real broadcast
+  // color -- the two were completely disconnected, so the status line
+  // showed whatever color was configured while the actual packet always
+  // sent Cyan. Fixed to use color1Idx for the real color byte (offset 12
+  // per PROTOCOL.md's CF 0B layout), matching what the status display
+  // already claims. Rolling-code bytes (offsets 6-11) left as zero --
+  // the ears receiver doesn't validate them, only the color byte.
   const uint8_t data[] = {0xCF, 0x0B, 0x00, 0xC4, 0x20, 0x22, 0x00,
-                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+                          0x00, 0x00, 0x00, 0x00, 0x00,
+                          (uint8_t)(color1Idx & 0x1F)};
   sendPayload(data, sizeof(data));
 }
 

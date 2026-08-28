@@ -75,7 +75,7 @@ LSM6DS3 myIMU(I2C_MODE, 0x6A); // per the library's own example for this board
 // keep this in sync, or loop() and reality disagree about the rail state.
 bool railOn = false;
 
-// --- Haptic Feedback Helper ---
+// --- Haptic Feedback Helper (non-blocking) ---
 #if HAS_HAPTIC
 // Motor is on the raw battery rail (~3.0-4.2V), rated for 3.0V/100mA. 80%
 // PWM duty brings the sustained average down near its rated point (e.g.
@@ -85,46 +85,175 @@ bool railOn = false;
 // 80% duty alone would deliver at a low, near-depleted battery.
 #define HAPTIC_DUTY_PERCENT 80
 #define HAPTIC_KICKSTART_MS 40
+// Longest documented pattern is Complex SOS (0x6): 3x250 + 3x500 + 3x250,
+// each pulse is 2 steps (kick+sustain) plus a gap step between every pulse
+// and between each 3-pulse group -- 9 pulses (18 steps) + 8 internal gaps
+// + 2 inter-group gaps = 28 steps. Rounded up for headroom.
+#define HAPTIC_MAX_STEPS 32
 
-void hapticPulse(unsigned long durationMs) {
+// Every pattern used to be a chain of hapticPulse() calls, each blocking
+// via delay() for its full duration (up to 1000ms for the boot test pulse)
+// -- since executeDisneyMicrocode()/manual animations only render from
+// loop(), the strip visibly froze for however long a haptic buzz lasted.
+// Replaced with a step sequence (kick, sustain, gap, kick, sustain...)
+// advanced against millis() in updateHaptic(), called every loop() pass
+// exactly like updateScanBoost() -- motor timing is unaffected, rendering
+// just keeps running underneath it now.
+struct HapticStep {
+  uint8_t duty;         // 0 = motor off, used for the double-tap/sharp-pulse gap
+  unsigned long durationMs;
+};
+HapticStep hapticSteps[HAPTIC_MAX_STEPS];
+uint8_t hapticStepCount = 0;
+uint8_t hapticStepIndex = 0;
+unsigned long hapticStepStart = 0;
+bool hapticActive = false;
+
+uint8_t appendHapticPulse(uint8_t slot, unsigned long durationMs) {
   uint8_t sustainDuty = (uint8_t)((HAPTIC_DUTY_PERCENT * 255) / 100);
   unsigned long kick = min(durationMs, (unsigned long)HAPTIC_KICKSTART_MS);
-
-  analogWrite(HAPTIC_PIN, 255); // full-power kick to overcome static friction
-  delay(kick);
+  hapticSteps[slot].duty = 255; // full-power kick to overcome static friction
+  hapticSteps[slot].durationMs = kick;
+  slot++;
   if (durationMs > kick) {
-    analogWrite(HAPTIC_PIN, sustainDuty);
-    delay(durationMs - kick);
+    hapticSteps[slot].duty = sustainDuty;
+    hapticSteps[slot].durationMs = durationMs - kick;
+    slot++;
   }
-  analogWrite(HAPTIC_PIN, 0);
+  return slot;
 }
 
+uint8_t appendHapticGap(uint8_t slot, unsigned long durationMs) {
+  hapticSteps[slot].duty = 0;
+  hapticSteps[slot].durationMs = durationMs;
+  return slot + 1;
+}
+
+// `count` identical pulses separated by `gapMs` gaps (no trailing gap after
+// the last one) -- the repeated shape behind Tap/Double Tap/Triple Tap/
+// Ticks below.
+uint8_t appendHapticPulses(uint8_t slot, uint8_t count, unsigned long pulseMs,
+                            unsigned long gapMs) {
+  for (uint8_t n = 0; n < count; n++) {
+    if (n > 0) slot = appendHapticGap(slot, gapMs);
+    slot = appendHapticPulse(slot, pulseMs);
+  }
+  return slot;
+}
+
+// Pattern table matches PROTOCOL.md sec. 5 (Haptic Vibration Engine) --
+// codes are the low nibble of a real show packet's VibeByte (0xB0 |
+// VibeCode). Previously only a handful of ad-hoc patterns existed here
+// (button-feedback only, never driven by real packets) and several didn't
+// match the documented timing at all (0x07 was 600ms vs. the documented
+// 2.0s, 0x0A was two 300ms pulses vs. one 500ms pulse, 0x0B was a bare
+// 300ms default vs. the documented 1000ms). Rebuilt against the actual
+// table so real show-triggered haptics feel like the documented patterns,
+// not whatever happened to be convenient for local button testing.
 void triggerHapticPattern(uint8_t patternCode) {
   Serial.printf("📳 [HAPTIC] Triggering pattern: 0x%02X on D4 (P0.04)\n", patternCode);
-  switch (patternCode) {
-    case 0xFF: // 1-Second Full Power Test Pulse
-      hapticPulse(1000);
-      break;
-    case 0x01: // Single Tap (250ms)
-      hapticPulse(250);
-      break;
-    case 0x02: // Double Tap (250ms / 150ms / 250ms)
-      hapticPulse(250);
-      delay(150);
-      hapticPulse(250);
-      break;
-    case 0x07: // Heavy Rumble (600ms)
-      hapticPulse(600);
-      break;
-    case 0x0A: // Sharp Pulse
-      hapticPulse(300);
-      delay(100);
-      hapticPulse(300);
-      break;
-    case 0x0B: // Standard Pulse
-    default:
-      hapticPulse(300);
-      break;
+  uint8_t slot = 0;
+  if (patternCode == 0xFF) {
+    // Brief full-power boot self-test pulse -- not a real protocol vibe
+    // code (those only occupy the low nibble, 0x0-0xF); kept as a distinct
+    // sentinel so it can never collide with a real "Reserved" code (0xC-0xF)
+    // decoded from a live packet. Short on purpose: this fires on every
+    // power-up just to confirm the motor is alive, not to be felt as a
+    // real notification.
+    slot = appendHapticPulse(slot, 750);
+  } else {
+    switch (patternCode & 0x0F) {
+      case 0x1: case 0x9: // Tap / Single Tap (0x9 is a documented alias of 0x1)
+        slot = appendHapticPulses(slot, 1, 250, 0);
+        break;
+      case 0x2: // Double Tap: 2x250ms taps, 100ms gap
+        slot = appendHapticPulses(slot, 2, 250, 100);
+        break;
+      case 0x3: // Triple Tap: 3x250ms taps, 100ms gap
+        slot = appendHapticPulses(slot, 3, 250, 100);
+        break;
+      case 0x4: // Pulse Combo: 2x250ms taps + 1x500ms pulse
+        slot = appendHapticPulses(slot, 2, 250, 100);
+        slot = appendHapticGap(slot, 100);
+        slot = appendHapticPulse(slot, 500);
+        break;
+      case 0x5: // Fast Pattern: 4x250ms taps + 1x500ms + 1x250ms tap
+        slot = appendHapticPulses(slot, 4, 250, 100);
+        slot = appendHapticGap(slot, 100);
+        slot = appendHapticPulse(slot, 500);
+        slot = appendHapticGap(slot, 100);
+        slot = appendHapticPulse(slot, 250);
+        break;
+      case 0x6: // Complex SOS: 3x250ms + 3x500ms + 3x250ms
+        slot = appendHapticPulses(slot, 3, 250, 100);
+        slot = appendHapticGap(slot, 100);
+        slot = appendHapticPulses(slot, 3, 500, 100);
+        slot = appendHapticGap(slot, 100);
+        slot = appendHapticPulses(slot, 3, 250, 100);
+        break;
+      case 0x7: // Heavy Rumble: continuous 2.0s heavy vibration
+        slot = appendHapticPulse(slot, 2000);
+        break;
+      case 0x8: // Ticks: 6x125ms rapid ticks, 50ms gap
+        slot = appendHapticPulses(slot, 6, 125, 50);
+        break;
+      case 0xA: // Sharp Pulse: 1x500ms medium pulse
+        slot = appendHapticPulse(slot, 500);
+        break;
+      case 0xB: // Notification Pulse: 1x1000ms long pulse
+        slot = appendHapticPulse(slot, 1000);
+        break;
+      case 0x0: // None
+      default:  // 0xC-0xF Reserved -- also off
+        break;
+    }
+  }
+
+  if (slot == 0) {
+    // "None"/Reserved code, or nothing queued -- cut off any previous
+    // pattern still mid-run instead of leaving it to finish on its own.
+    hapticActive = false;
+    analogWrite(HAPTIC_PIN, 0);
+    return;
+  }
+
+  // A new trigger always overrides whatever pattern is currently mid-run
+  // (e.g. a fresh button press while a previous buzz is still finishing).
+  hapticStepCount = slot;
+  hapticStepIndex = 0;
+  hapticStepStart = millis();
+  hapticActive = true;
+  analogWrite(HAPTIC_PIN, hapticSteps[0].duty);
+}
+
+// Real show packets encode the vibe code in the last payload byte as
+// 0xB0 | VibeCode (PROTOCOL.md sec. 5) -- but only for the commands that
+// document a VibeByte field at all (E9 05/06/08/09/0E/11/12/14 and the
+// generic-show fallback). E9 0C's baked animations (Rainbow/Blink White/
+// Orange Blink) repurpose their trailing byte(s) as signature/disambiguation
+// data instead, not a real vibe code (confirmed: those bytes are 0x95/0xB0/
+// 0x95, and PROTOCOL.md's own E9 0C section never lists a VibeByte) -- so
+// callers must not invoke this for 0x0C. The 0xF0 top-nibble check is a
+// belt-and-suspenders guard against decoding some other field as a bogus
+// pattern on a command whose real vibe-byte position isn't actually
+// confirmed yet.
+void triggerHapticFromShowByte(uint8_t vibeByte) {
+  if ((vibeByte & 0xF0) != 0xB0) return;
+  triggerHapticPattern(vibeByte & 0x0F);
+}
+
+void updateHaptic(unsigned long now) {
+  if (!hapticActive)
+    return;
+  if (now - hapticStepStart >= hapticSteps[hapticStepIndex].durationMs) {
+    hapticStepIndex++;
+    hapticStepStart = now;
+    if (hapticStepIndex >= hapticStepCount) {
+      analogWrite(HAPTIC_PIN, 0);
+      hapticActive = false;
+      return;
+    }
+    analogWrite(HAPTIC_PIN, hapticSteps[hapticStepIndex].duty);
   }
 }
 #endif // HAS_HAPTIC
@@ -173,6 +302,86 @@ int calculateBatteryPercentage(float volts) {
   }
   int finalPct = (int)(pct + 0.5f);
   return constrain(finalPct, 0, 100);
+}
+
+// --- Low Battery Warning (vibration + red flash) ---
+// Previously the only way to see battery state was a deliberate long-press
+// (runBatterySweepAnimation()) or the one-time boot sweep -- nothing warned
+// passively during normal wear. For a permanently-installed, non-swappable
+// single 18650 worn for a multi-hour event, that meant the only real signal
+// of a dying battery was the LEDs going dark mid-show. This samples the
+// battery every LOW_BATTERY_CHECK_INTERVAL_MS and, if it's at or below
+// LOW_BATTERY_THRESHOLD_PCT, fires a buzz + a few red flashes -- no more
+// often than LOW_BATTERY_WARN_COOLDOWN_MS apart, so it nags periodically
+// instead of on every single check while low.
+#define LOW_BATTERY_THRESHOLD_PCT 15
+#define LOW_BATTERY_CHECK_INTERVAL_MS (240UL * 1000UL)
+#define LOW_BATTERY_WARN_COOLDOWN_MS (480UL * 1000UL)
+#define LOW_BATTERY_FLASH_COUNT 3
+#define LOW_BATTERY_FLASH_ON_MS 150
+#define LOW_BATTERY_FLASH_OFF_MS 150
+
+unsigned long lastBatteryCheckTime = 0;
+unsigned long lastLowBatteryWarnTime = 0;
+bool lowBatteryFlashActive = false;
+uint8_t lowBatteryFlashStep = 0; // counts ON/OFF half-cycles
+unsigned long lowBatteryFlashStepStart = 0;
+
+void startLowBatteryWarning(float volts, int pct) {
+  Serial.printf("🔋⚠️  [BATTERY] LOW: %.2fV (%d%%) -- warning!\n", volts, pct);
+#if HAS_HAPTIC
+  triggerHapticPattern(0x03); // Triple Tap -- distinct from any show-driven pattern
+#endif
+  lowBatteryFlashActive = true;
+  lowBatteryFlashStep = 0;
+  lowBatteryFlashStepStart = millis();
+}
+
+// Called every loop() pass (like updateScanBoost()/updateHaptic()) to
+// sample the battery and decide whether to (re-)trigger the warning.
+void updateLowBatteryMonitor(unsigned long now) {
+  if (now - lastBatteryCheckTime < LOW_BATTERY_CHECK_INTERVAL_MS)
+    return;
+  lastBatteryCheckTime = now;
+
+  float vBat = readBatteryVoltage();
+  int pct = calculateBatteryPercentage(vBat);
+  if (pct <= LOW_BATTERY_THRESHOLD_PCT &&
+      (lastLowBatteryWarnTime == 0 ||
+       now - lastLowBatteryWarnTime >= LOW_BATTERY_WARN_COOLDOWN_MS)) {
+    lastLowBatteryWarnTime = now;
+    startLowBatteryWarning(vBat, pct);
+  }
+}
+
+// Advances the flash step timer -- kept separate from the actual
+// pixel-writing (renderLowBatteryFlash(), called from loop()'s render
+// dispatch) so the warning can preempt whatever's currently on the strip
+// without the two pieces needing to know about each other's internals.
+void updateLowBatteryFlash(unsigned long now) {
+  if (!lowBatteryFlashActive)
+    return;
+  unsigned long stepMs = (lowBatteryFlashStep % 2 == 0) ? LOW_BATTERY_FLASH_ON_MS
+                                                          : LOW_BATTERY_FLASH_OFF_MS;
+  if (now - lowBatteryFlashStepStart >= stepMs) {
+    lowBatteryFlashStep++;
+    lowBatteryFlashStepStart = now;
+    if (lowBatteryFlashStep >= LOW_BATTERY_FLASH_COUNT * 2) {
+      lowBatteryFlashActive = false;
+    }
+  }
+}
+
+void renderLowBatteryFlash() {
+  bool on = (lowBatteryFlashStep % 2 == 0);
+  if (on) {
+    for (int i = 0; i < NUM_LEDS; i++) {
+      strip.setPixelColor(i, strip.Color(255, 0, 0)); // red -- universal low-battery warning color
+    }
+  } else {
+    strip.clear();
+  }
+  strip.show();
 }
 
 uint16_t batteryGaugeHue(int i) {
@@ -376,6 +585,22 @@ volatile uint8_t parkPatternId = 0; // payload[12] -- only 0x30/0x31 confirmed a
 volatile bool parkSpin = false;        // computed at parse time, see parseDisneyPacket()
 volatile bool parkSpinReverse = false;
 
+// Real SK6812 white channel instead of faking white via R=G=B on the RGB
+// LEDs -- the 3-arg Color() always encodes W=0, so driving all 3 color
+// LEDs to fake white burns more current and looks cooler/dimmer than the
+// dedicated white diode. Covers both a literal (255,255,255) source (e.g.
+// E9 0C's baked "Blink White") and DISNEY_PALETTE's White/White 2 entries
+// (255,200,180 -- a warm-white RGB approximation), which is what any
+// palette-driven show color actually resolves to when the real band picks
+// White. Previously only the E9 0E/0C strobe branch checked for this, and
+// only the literal-255 case, so every other palette-driven render (E9 09,
+// 0x10/0xFE park zones, dual-color holds, etc.) missed real White entirely.
+uint32_t neoColor(uint8_t r, uint8_t g, uint8_t b) {
+  bool isWhite = (r == 255 && g == 255 && b == 255) ||
+                 (r == 255 && g == 200 && b == 180);
+  return isWhite ? strip.Color(0, 0, 0, 255) : strip.Color(r, g, b);
+}
+
 #if !FET1_TOGGLE_TEST
 void executeDisneyMicrocode() {
   if (receivedCommandType == 0xC1) {
@@ -389,10 +614,16 @@ void executeDisneyMicrocode() {
     if (millis() - lastFrame >= FRAME_INTERVAL_MS) {
       lastFrame = millis();
       for (int i = 0; i < NUM_LEDS; i++) {
-        strip.setPixelColor(i, strip.Color(showR1, showG1, showB1));
+        strip.setPixelColor(i, neoColor(showR1, showG1, showB1));
       }
-      strip.setPixelColor(random(NUM_LEDS), strip.Color(255, 255, 255));
-      strip.setPixelColor(random(NUM_LEDS), strip.Color(255, 255, 255));
+      // Real SK6812 white channel (4-arg Color()) instead of faking white
+      // via R=G=B=255 -- same fix already applied to the E9 0B/0C/0E white
+      // renders tonight. Bumped from 2 to 4 sparkle pixels since 2 of 31
+      // was proportionally too subtle to read as "sparkle" against the
+      // solid-color fill.
+      for (int s = 0; s < 4; s++) {
+        strip.setPixelColor(random(NUM_LEDS), strip.Color(0, 0, 0, 255));
+      }
       strip.show();
     }
   } else if (receivedCommandType == 0xC4) {
@@ -463,7 +694,7 @@ void executeDisneyMicrocode() {
     // 🎨 5-COLOR PALETTE RING: 5 distinct color segments
     int segSize = NUM_LEDS / 5;
     for (int s = 0; s < 5; s++) {
-      uint32_t c = strip.Color(showColors5[s][0], showColors5[s][1], showColors5[s][2]);
+      uint32_t c = neoColor(showColors5[s][0], showColors5[s][1], showColors5[s][2]);
       int startIdx = s * segSize;
       int count = (s == 4) ? (NUM_LEDS - startIdx) : segSize;
       for (int i = startIdx; i < startIdx + count; i++) {
@@ -501,8 +732,8 @@ void executeDisneyMicrocode() {
       float colorPhase = phase + angleFrac;
       int slot = ((int)(colorPhase * n)) % n;
       if (slot < 0) slot += n;
-      strip.setPixelColor(i, strip.Color(showColors5[slot][0], showColors5[slot][1],
-                                          showColors5[slot][2]));
+      strip.setPixelColor(i, neoColor(showColors5[slot][0], showColors5[slot][1],
+                                       showColors5[slot][2]));
     }
     strip.show();
   } else if (receivedCommandType == 0x0E) {
@@ -521,16 +752,14 @@ void executeDisneyMicrocode() {
       lastFrame = millis();
       strobeOn = !strobeOn;
       if (strobeOn) {
-        // Pure white uses the SK6812's dedicated white channel (4-arg
-        // Color(), matching the battery gauge's reference marker) instead
-        // of faking it with R=G=B=255 -- the 3-arg form always encodes
+        // Pure/palette white uses the SK6812's dedicated white channel via
+        // neoColor() (matching the battery gauge's reference marker)
+        // instead of faking it with R=G=B -- the 3-arg form always encodes
         // W=0, so that would drive all 3 color LEDs instead of the
         // cleaner/more efficient real white LED. Any other color (e.g.
         // Orange Blink) isn't representable on the white channel, so it
         // still goes through R/G/B as before.
-        bool isPureWhite = (showR1 == 255 && showG1 == 255 && showB1 == 255);
-        uint32_t c = isPureWhite ? strip.Color(0, 0, 0, 255)
-                                  : strip.Color(showR1, showG1, showB1);
+        uint32_t c = neoColor(showR1, showG1, showB1);
         for (int i = 0; i < NUM_LEDS; i++) {
           strip.setPixelColor(i, c);
         }
@@ -572,8 +801,8 @@ void executeDisneyMicrocode() {
     int segSize = NUM_LEDS / n;
     for (int s = 0; s < n; s++) {
       int srcSlot = (s + phase) % n;
-      uint32_t c = strip.Color(showColors5[srcSlot][0], showColors5[srcSlot][1],
-                                showColors5[srcSlot][2]);
+      uint32_t c = neoColor(showColors5[srcSlot][0], showColors5[srcSlot][1],
+                            showColors5[srcSlot][2]);
       int startIdx = s * segSize;
       int count = (s == n - 1) ? (NUM_LEDS - startIdx) : segSize;
       for (int i = startIdx; i < startIdx + count; i++) {
@@ -601,17 +830,17 @@ void executeDisneyMicrocode() {
         for (int e = 0; e < 2; e++) {
           int offset = e * half;
           for (int c = 4; c < 10; c++) {
-            strip.setPixelColor(offset + c, strip.Color(showR2, showG2, showB2));
+            strip.setPixelColor(offset + c, neoColor(showR2, showG2, showB2));
           }
         }
       } else {
         for (int i = 0; i < NUM_LEDS; i++) {
-          strip.setPixelColor(i, strip.Color(showR1, showG1, showB1));
+          strip.setPixelColor(i, neoColor(showR1, showG1, showB1));
         }
-        strip.setPixelColor(spinPos, strip.Color(showR2, showG2, showB2));
-        strip.setPixelColor((spinPos + 1) % half, strip.Color(showR2, showG2, showB2));
-        strip.setPixelColor(half + spinPos, strip.Color(showR2, showG2, showB2));
-        strip.setPixelColor(half + ((spinPos + 1) % half), strip.Color(showR2, showG2, showB2));
+        strip.setPixelColor(spinPos, neoColor(showR2, showG2, showB2));
+        strip.setPixelColor((spinPos + 1) % half, neoColor(showR2, showG2, showB2));
+        strip.setPixelColor(half + spinPos, neoColor(showR2, showG2, showB2));
+        strip.setPixelColor(half + ((spinPos + 1) % half), neoColor(showR2, showG2, showB2));
       }
       strip.show();
       step++;
@@ -661,10 +890,10 @@ void executeDisneyMicrocode() {
 
     int half = NUM_LEDS / 2;
     for (int i = 0; i < half; i++) {
-      strip.setPixelColor(i, strip.Color(rA, gA, bA));
+      strip.setPixelColor(i, neoColor(rA, gA, bA));
     }
     for (int i = half; i < NUM_LEDS; i++) {
-      strip.setPixelColor(i, strip.Color(rB, gB, bB));
+      strip.setPixelColor(i, neoColor(rB, gB, bB));
     }
     strip.show();
   } else if (receivedCommandType == 0x14) {
@@ -685,8 +914,8 @@ void executeDisneyMicrocode() {
       int segSize = NUM_LEDS / 5;
       for (int s = 0; s < 5; s++) {
         bool useColor2 = (zoneState >> s) & 0x01;
-        uint32_t c = useColor2 ? strip.Color(showR2, showG2, showB2)
-                                : strip.Color(showR1, showG1, showB1);
+        uint32_t c = useColor2 ? neoColor(showR2, showG2, showB2)
+                                : neoColor(showR1, showG1, showB1);
         int startIdx = s * segSize;
         int count = (s == 4) ? (NUM_LEDS - startIdx) : segSize;
         for (int i = startIdx; i < startIdx + count; i++) {
@@ -715,8 +944,8 @@ void executeDisneyMicrocode() {
     }
     for (int s = 0; s < 5; s++) {
       int srcSlot = ((s + rotateOffset) % 5 + 5) % 5;
-      uint32_t c = strip.Color(showColorsPark5[srcSlot][0], showColorsPark5[srcSlot][1],
-                                showColorsPark5[srcSlot][2]);
+      uint32_t c = neoColor(showColorsPark5[srcSlot][0], showColorsPark5[srcSlot][1],
+                            showColorsPark5[srcSlot][2]);
       int startIdx = s * segSize;
       int count = (s == 4) ? (NUM_LEDS - startIdx) : segSize;
       for (int i = startIdx; i < startIdx + count; i++) {
@@ -735,10 +964,10 @@ void executeDisneyMicrocode() {
     const unsigned long STEP_MS = 40;
     const int GAP_WIDTH = NUM_LEDS / 5;
     int pos = (int)((millis() / STEP_MS) % NUM_LEDS);
-    uint32_t chaserColor = strip.Color(showColorsPark5[1][0], showColorsPark5[1][1],
-                                        showColorsPark5[1][2]);
+    uint32_t chaserColor = neoColor(showColorsPark5[1][0], showColorsPark5[1][1],
+                                     showColorsPark5[1][2]);
     for (int i = 0; i < NUM_LEDS; i++) {
-      strip.setPixelColor(i, strip.Color(showR1, showG1, showB1));
+      strip.setPixelColor(i, neoColor(showR1, showG1, showB1));
     }
     for (int d = 0; d < GAP_WIDTH; d++) {
       int i = (pos + d) % NUM_LEDS;
@@ -751,14 +980,14 @@ void executeDisneyMicrocode() {
     if (isDualColor) {
       int half = NUM_LEDS / 2;
       for (int i = 0; i < half; i++) {
-        strip.setPixelColor(i, strip.Color(showR1, showG1, showB1));
+        strip.setPixelColor(i, neoColor(showR1, showG1, showB1));
       }
       for (int i = half; i < NUM_LEDS; i++) {
-        strip.setPixelColor(i, strip.Color(showR2, showG2, showB2));
+        strip.setPixelColor(i, neoColor(showR2, showG2, showB2));
       }
     } else {
       for (int i = 0; i < NUM_LEDS; i++) {
-        strip.setPixelColor(i, strip.Color(showR1, showG1, showB1));
+        strip.setPixelColor(i, neoColor(showR1, showG1, showB1));
       }
     }
     strip.show();
@@ -801,8 +1030,19 @@ void setup() {
   pinMode(HAPTIC_PIN, OUTPUT);
   digitalWrite(HAPTIC_PIN, LOW);
 
-  // 📳 Startup Haptic Test: 1-Second Full-Power Pulse
+  // 📳 Startup Haptic Test: brief full-power pulse. triggerHapticPattern()
+  // only sets the motor's initial duty -- updateHaptic() is what actually
+  // steps it down and cuts it off, and that only runs from loop(). Since
+  // runBatterySweepAnimation() right below is itself a blocking multi-
+  // second delay()-driven sequence that never reaches loop(), the motor
+  // was staying pinned at full power for that whole animation instead of
+  // stopping after 150ms -- drain the sequencer here first so it actually
+  // finishes before the (also blocking) battery sweep starts.
   triggerHapticPattern(0xFF);
+  while (hapticActive) {
+    updateHaptic(millis());
+    delay(5);
+  }
 #endif
 #if HAS_BATTERY_ADC
   // Held permanently LOW -- see the note above HAS_BATTERY_ADC.
@@ -879,6 +1119,15 @@ void loop() {
 
   updateScanBoost(now);
 
+#if HAS_HAPTIC
+  updateHaptic(now);
+#endif
+
+#if HAS_BATTERY_ADC
+  updateLowBatteryMonitor(now);
+  updateLowBatteryFlash(now);
+#endif
+
 #if HAS_BUTTON
   // --- Button Read & Debounce (Short-press cycles modes, Long-press > 1.2s triggers Battery Sweep) ---
   bool reading = digitalRead(BUTTON_PIN);
@@ -927,6 +1176,9 @@ void loop() {
   // railOn is a global (declared near the top) since runBatterySweepAnimation()
   // also toggles FET1_GATE_PIN directly and must keep this in sync.
   bool wantDisplay = disneyDeviceFound || (manualMode != 0);
+#if HAS_BATTERY_ADC
+  wantDisplay = wantDisplay || lowBatteryFlashActive;
+#endif
 
   if (wantDisplay && !railOn) {
     digitalWrite(FET1_GATE_PIN, HIGH);
@@ -938,6 +1190,11 @@ void loop() {
   }
 
   if (wantDisplay) {
+#if HAS_BATTERY_ADC
+    if (lowBatteryFlashActive) {
+      renderLowBatteryFlash();
+    } else
+#endif
     if (disneyDeviceFound) {
       executeDisneyMicrocode();
     } else {
@@ -980,25 +1237,52 @@ void loop() {
 
 // --- Animation Routines ---
 #if !FET1_TOGGLE_TEST
+
+// RGBW-safe pixel dim for the fade-trail animations below. This strip is
+// NEO_GRBW, so strip.getPixelColor() packs all 4 channels into the 32-bit
+// return (W in the top byte, same layout strip.Color(r,g,b,w) writes) --
+// extracting only R/G/B here and writing back via the 3-arg Color() would
+// silently zero any white component every single frame instead of letting
+// it decay with the rest of the trail. Needed now that several of these
+// animations light the real white diode for flare/spark/flash highlights.
+void dimPixel(int i, float factor) {
+  uint32_t c = strip.getPixelColor(i);
+  uint8_t w = (uint8_t)(((c >> 24) & 0xFF) * factor);
+  uint8_t r = (uint8_t)(((c >> 16) & 0xFF) * factor);
+  uint8_t g = (uint8_t)(((c >> 8) & 0xFF) * factor);
+  uint8_t b = (uint8_t)((c & 0xFF) * factor);
+  strip.setPixelColor(i, strip.Color(r, g, b, w));
+}
+
 void runIgnitionPulse(uint8_t gHue) {
   uint8_t pulseIntensity = beatsin8(45, 130, 255);
+  // White-hot flare: as the pulse nears its peak, blend the flame hue
+  // toward the real white diode instead of just cranking RGB brighter --
+  // a true white core reads like a hot flame tip in a way saturated
+  // orange/red alone can't, and it's cheaper current-wise than faking
+  // white via all 3 color LEDs.
+  uint8_t whiteAmt = (pulseIntensity > 210)
+                          ? (uint8_t)(((uint32_t)(pulseIntensity - 210) * 255) / 45)
+                          : 0;
+  uint8_t sat = 255 - (whiteAmt / 3); // desaturate slightly as it whitens
   for (int i = 0; i < NUM_LEDS; i++) {
     uint16_t h = (beatsin8(18, 0, 24, 0, i * 6) * 65536) / 255;
-    strip.setPixelColor(i, strip.ColorHSV(h, 255, pulseIntensity));
+    uint32_t c = strip.ColorHSV(h, sat, pulseIntensity);
+    c = (c & 0x00FFFFFF) | ((uint32_t)whiteAmt << 24);
+    strip.setPixelColor(i, c);
   }
   strip.show();
 }
 
 void runMeteorChase() {
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint32_t c = strip.getPixelColor(i);
-    uint8_t r = ((c >> 16) & 0xFF) * 0.82;
-    uint8_t g = ((c >> 8) & 0xFF) * 0.82;
-    uint8_t b = (c & 0xFF) * 0.82;
-    strip.setPixelColor(i, strip.Color(r, g, b));
+    dimPixel(i, 0.82f);
   }
   uint8_t head = beatsin8(25, 0, NUM_LEDS - 1);
-  strip.setPixelColor(head, strip.Color(0, 255, 255));
+  // White-hot nucleus with a cyan tint, instead of pure RGB cyan -- a
+  // comet's head reads brighter/hotter with the real white diode lit
+  // underneath the color than R/G/B alone can fake.
+  strip.setPixelColor(head, strip.Color(0, 80, 80, 255));
   strip.show();
 }
 
@@ -1010,19 +1294,26 @@ void runCyberPlasma() {
     uint16_t h = (val * 65536) / 255;
     strip.setPixelColor(i, strip.ColorHSV(h, 255, 200));
   }
+  // Electrical white sparks crackling through the plasma field -- real
+  // white diode layered on top of the existing hue (OR'd into the W byte)
+  // rather than overwriting it, so the spark reads as "hot" rather than
+  // just replacing the plasma color outright.
+  if (random(100) < 25) {
+    int pos = random(NUM_LEDS);
+    uint32_t c = strip.getPixelColor(pos);
+    strip.setPixelColor(pos, (c & 0x00FFFFFF) | ((uint32_t)255 << 24));
+  }
   strip.show();
 }
 
 void runLightningStorm() {
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint32_t c = strip.getPixelColor(i);
-    uint8_t r = ((c >> 16) & 0xFF) * 0.65;
-    uint8_t g = ((c >> 8) & 0xFF) * 0.65;
-    uint8_t b = (c & 0xFF) * 0.65;
-    strip.setPixelColor(i, strip.Color(r, g, b));
+    dimPixel(i, 0.65f);
   }
   if (random(100) < 12) {
-    strip.setPixelColor(random(NUM_LEDS), strip.Color(240, 248, 255));
+    // Lightning core is white-hot -- real white diode instead of the old
+    // (240,248,255) RGB approximation.
+    strip.setPixelColor(random(NUM_LEDS), strip.Color(0, 0, 0, 255));
   }
   if (random(100) < 2) {
     for (int i = 0; i < NUM_LEDS; i++) {
@@ -1034,38 +1325,41 @@ void runLightningStorm() {
 
 void runNeonGlitch() {
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint32_t c = strip.getPixelColor(i);
-    uint8_t r = ((c >> 16) & 0xFF) * 0.70;
-    uint8_t g = ((c >> 8) & 0xFF) * 0.70;
-    uint8_t b = (c & 0xFF) * 0.70;
-    strip.setPixelColor(i, strip.Color(r, g, b));
+    dimPixel(i, 0.70f);
   }
   if (random(100) < 60) {
     int pos = random(NUM_LEDS);
-    uint8_t variant = random(3);
+    uint8_t variant = random(4);
     if (variant == 0)
       strip.setPixelColor(pos, strip.Color(255, 0, 255));
     else if (variant == 1)
       strip.setPixelColor(pos, strip.Color(0, 255, 0));
-    else
+    else if (variant == 2)
       strip.setPixelColor(pos, strip.Color(64, 224, 208));
+    else
+      // White noise glitch -- real white diode, closer to "digital
+      // static" than any RGB color could read.
+      strip.setPixelColor(pos, strip.Color(0, 0, 0, 255));
   }
   strip.show();
 }
 
 void runHyperDrive(uint8_t gHue) {
   for (int i = 0; i < NUM_LEDS; i++) {
-    uint32_t c = strip.getPixelColor(i);
-    uint8_t r = ((c >> 16) & 0xFF) * 0.55;
-    uint8_t g = ((c >> 8) & 0xFF) * 0.55;
-    uint8_t b = (c & 0xFF) * 0.55;
-    strip.setPixelColor(i, strip.Color(r, g, b));
+    dimPixel(i, 0.55f);
   }
   uint8_t leadHead = beatsin8(120, 0, NUM_LEDS - 1);
   uint16_t h1 = ((gHue * 3) % 256) * 65536 / 255;
   uint16_t h2 = (((gHue * 3) + 128) % 256) * 65536 / 255;
   strip.setPixelColor(leadHead, strip.ColorHSV(h1, 255, 255));
   strip.setPixelColor((leadHead + (NUM_LEDS / 2)) % NUM_LEDS, strip.ColorHSV(h2, 255, 255));
+  // Occasional warp-flash: real white diode punch on both streak heads,
+  // standing in for a hyperspace jump -- brief and rare so it reads as a
+  // flash, not a steady-state color.
+  if (random(100) < 4) {
+    strip.setPixelColor(leadHead, strip.Color(0, 0, 0, 255));
+    strip.setPixelColor((leadHead + (NUM_LEDS / 2)) % NUM_LEDS, strip.Color(0, 0, 0, 255));
+  }
   strip.show();
 }
 #endif // !FET1_TOGGLE_TEST
@@ -1314,6 +1608,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       disneyDeviceFound = true;
       Serial.printf("   🎨 Single Color Index: %d (%s)\n", colorIdx,
                     DISNEY_PALETTE_NAMES[colorIdx]);
+#if HAS_HAPTIC
+      triggerHapticFromShowByte(payload[len - 1]);
+#endif
     }
     // 0x06: Dual Split Palette
     else if (showCmd == 0x06 && len >= 11) {
@@ -1333,6 +1630,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       Serial.printf("   🎨 Dual Colors: %s / %s\n",
                     DISNEY_PALETTE_NAMES[color1Idx],
                     DISNEY_PALETTE_NAMES[color2Idx]);
+#if HAS_HAPTIC
+      triggerHapticFromShowByte(payload[len - 1]);
+#endif
     }
     // 0x08: Raw RGB Color Command
     // Payload has a 2-byte D2 55 sub-header before the color bytes (see
@@ -1350,6 +1650,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       lastShowSyncTime = now;
       disneyDeviceFound = true;
       Serial.printf("   🎨 Raw RGB: (%d, %d, %d)\n", showR1, showG1, showB1);
+#if HAS_HAPTIC
+      triggerHapticFromShowByte(payload[len - 1]);
+#endif
     }
     // 0x0B: High-Contrast Circle (Mode 4 on Transmitter)
     else if (showCmd == 0x0B) {
@@ -1388,6 +1691,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       lastShowSyncTime = now;
       disneyDeviceFound = true;
       Serial.println("   🎨 [Mode 7] 5-Color Palette Ring!");
+#if HAS_HAPTIC
+      triggerHapticFromShowByte(payload[len - 1]);
+#endif
     }
     // 0x0E: PROTOCOL.md's documented "Strobe Pulse" 2-color layout turned
     // out to be wrong -- 5 real captured examples all decode cleanly as
@@ -1412,6 +1718,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       lastShowSyncTime = now;
       disneyDeviceFound = true;
       Serial.println("   🎨 [Mode 8] E9 0E: 5-color wheel rotation");
+#if HAS_HAPTIC
+      triggerHapticFromShowByte(payload[len - 1]);
+#endif
     }
     // 0x0C: "Animation Codes" -- per emcot.txt/research/BLE_Beacon_Ears,
     // several known real captures of this opcode ("Taste the Rainbow",
@@ -1467,7 +1776,16 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
         // 5, matching showColors5's capacity) as real palette data and
         // rotate through them -- reasonable for the "5 Palette Color
         // Cycle"-style captures, an approximation for anything else.
-        int slotCount = min(5, (int)len - 9);
+        // Clamped to >=0: showCmd==0x0C is reachable with len as low as 6
+        // (the outer gate only requires len>=6, and this generic branch has
+        // no length check of its own since the signature checks above it
+        // already handle the len<14 case implicitly by just not matching).
+        // A short packet made (int)len-9 negative, and assigning that to
+        // showColors5Count (a uint8_t) wrapped it to a huge value (e.g. -3
+        // -> 253) -- the render path then read showColors5[srcSlot] with
+        // srcSlot up to 252 against a real 5-slot array, an out-of-bounds
+        // read into whatever memory happens to follow it.
+        int slotCount = max(0, min(5, (int)len - 9));
         for (int s = 0; s < slotCount; s++) {
           uint8_t idx = payload[9 + s] & 0x1F;
           CRGB col = DISNEY_PALETTE[idx];
@@ -1484,8 +1802,18 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
     }
     // 0x12: Wave Pulse (Mode 6 on Transmitter)
     else if (showCmd == 0x12) {
-      uint8_t c1 = (len >= 8) ? (payload[7] & 0x1F) : 0x01;  // Color 1 (Purple)
-      uint8_t c2 = (len >= 10) ? (payload[9] & 0x1F) : 0x15; // Color 2 (Red)
+      // Transmitter's broadcastWavePulse() sends color1 duplicated at
+      // data[7]/[8] (0xA0|c1) and color2 duplicated at data[9]/[10]
+      // (0xA0|c2) -- landing at payload[9]/[10] and payload[11]/[12] once
+      // the 2-byte company-ID prefix (payload[0..1]) is accounted for,
+      // same +2 offset convention as every other showCmd branch (0x05,
+      // 0x06, 0x14). This previously read payload[7] (actually the timing
+      // byte) for c1 and payload[9] (actually color1's first copy) for c2,
+      // so the fill color was timing-byte garbage and color2 was never
+      // used at all -- confirmed live: primary showed as an unrelated
+      // color and secondary never appeared.
+      uint8_t c1 = (len >= 10) ? (payload[9] & 0x1F) : 0x01;  // Color 1 (Purple)
+      uint8_t c2 = (len >= 12) ? (payload[11] & 0x1F) : 0x15; // Color 2 (Red)
       CRGB col1 = DISNEY_PALETTE[c1];
       CRGB col2 = DISNEY_PALETTE[c2];
       showR1 = col1.r; showG1 = col1.g; showB1 = col1.b;
@@ -1495,6 +1823,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       disneyDeviceFound = true;
       Serial.printf("   🎨 [Mode 6] Wave Pulse! Colors: %s / %s\n",
                     DISNEY_PALETTE_NAMES[c1], DISNEY_PALETTE_NAMES[c2]);
+#if HAS_HAPTIC
+      triggerHapticFromShowByte(payload[len - 1]);
+#endif
     }
     // 0x11: Park Cross-Fade (e.g. Cyan to Pink) -- per emcot.txt "2 Palette
     // Colors follow the 0F" marker byte at payload[8]; color1/color2 land
@@ -1515,6 +1846,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       Serial.printf("   🎨 [Cross-Fade] %s -> %s over %lums\n",
                     DISNEY_PALETTE_NAMES[c1], DISNEY_PALETTE_NAMES[c2],
                     currentShowDurationMs);
+#if HAS_HAPTIC
+      triggerHapticFromShowByte(payload[len - 1]);
+#endif
     }
     // 0x14: same Center/NE two-color model as the unwrapped E9 10/13
     // "background+chaser" render (see PROTOCOL.md sec. 6), same byte
@@ -1537,6 +1871,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       Serial.printf("   🎨 [E9 14] Flicker: %s / %s over %lums\n",
                     DISNEY_PALETTE_NAMES[c1], DISNEY_PALETTE_NAMES[c2],
                     currentShowDurationMs);
+#if HAS_HAPTIC
+      triggerHapticFromShowByte(payload[len - 1]);
+#endif
     }
     // Fallback: Any other valid show command
     else {
@@ -1555,6 +1892,9 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
       lastShowSyncTime = now;
       disneyDeviceFound = true;
       Serial.printf("   🎨 Generic Show Command 0x%02X Activated!\n", showCmd);
+#if HAS_HAPTIC
+      triggerHapticFromShowByte(payload[len - 1]);
+#endif
     }
   } else if (len >= 4 && payload[2] == 0xCD && payload[3] == 0x07) {
     // CD 07: a "parade/show command not in our protocol docs" per
