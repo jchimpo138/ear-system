@@ -271,6 +271,10 @@ Payload: E1 00 E9 0C 00 EF 0F 4F 4F 5B F0 FB 14 37 48 95
 (Timing 0xEF has Always-On bit set; runs continuously)
 ```
 
+**Firmware-baked animation, not real palette data.** Decoding "Taste the Rainbow"'s color bytes (`5D 46 5B F0 05 32 37 48`) via the standard `(Mode<<5)|PaletteIndex` formula gives a scrambled non-rainbow sequence (Off/Lavender/White/Off Yellow/Bright Purple/Lime/Cyan 3/Pink) — confirmed live that treating this opcode uniformly as a strobe (the old firmware behavior) or decoding its bytes as real colors both look wrong on real hardware. The `research/BLE_Beacon_Ears` reference project reached the same conclusion independently and hardcodes a 6-color rainbow (red/orange/yellow/green/blue/purple) keyed off the exact byte signature instead of decoding it.
+
+Firmware detects the known "Taste the Rainbow" signature (bytes 2–13 of the payload) and renders a discrete 6-color-band sweep instead — matching the real band's actual look (confirmed live: a smooth continuous HSV hue blend, tried first, did not match; discrete color jumps, adapted from the Adafruit reference renderer's own approach for this exact signature, did). Any other `E9 0C` payload (Blink White, Orange Blink, 5-Palette-Color-Cycle, etc.) falls back to a generic multi-slot palette decode + rotation instead.
+
 ---
 
 ### E9 0E — Strobe Pulse

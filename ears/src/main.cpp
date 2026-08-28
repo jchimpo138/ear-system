@@ -352,6 +352,7 @@ uint8_t gHue = 0;
 // --- Disney Microcode Animation Drivers ---
 volatile uint8_t receivedCommandType = 0;
 volatile uint8_t showColors5[5][3]; // 5-slot palette RGB matrix
+volatile uint8_t showColors5Count = 5; // how many of the 5 slots are actually valid (0x0C can have fewer)
 
 // --- Family 3 (Park Infrastructure) E9 10 decode state ---
 // Bench-confirmed against a real MagicBand+ (see PROTOCOL.md sec. 6.1): 5
@@ -418,7 +419,7 @@ void executeDisneyMicrocode() {
       }
     }
     strip.show();
-  } else if (receivedCommandType == 0x0E || receivedCommandType == 0x0C) {
+  } else if (receivedCommandType == 0x0E) {
     // ⚡ STROBE PULSE: alternate white/black continuously for the show's
     // real duration -- same non-blocking throttle pattern.
     const unsigned long STROBE_INTERVAL_MS = 50;
@@ -436,6 +437,48 @@ void executeDisneyMicrocode() {
       }
       strip.show();
     }
+  } else if (receivedCommandType == 0xFC) {
+    // 🌈 E9 0C KNOWN "TASTE THE RAINBOW" ANIMATION: firmware-baked program
+    // on the real band, not real palette data. Matches the real band's
+    // actual look (per user observation) better with discrete color-band
+    // jumps than a smooth HSV blend -- adapted from the Adafruit reference
+    // renderer's own render() for this exact signature (research/
+    // BLE_Beacon_Ears), which uses 6 hardcoded colors and int()-truncated
+    // slot indices rather than a continuous hue sweep. Their version splits
+    // center-vs-outer-ring across two physical NeoPixel jewels; adapted
+    // here to our single linear strip using their outer-ring formula
+    // (spatial position + time both feed the same discrete slot index).
+    static const uint8_t RAINBOW6[6][3] = {
+        {255, 0, 0}, {255, 90, 0}, {255, 220, 0}, {0, 255, 0}, {0, 120, 255}, {180, 0, 255}};
+    const float ROTATE_PERIOD_S = 2.0f; // matches the reference renderer's own pacing
+    float phase = (float)millis() / 1000.0f / ROTATE_PERIOD_S;
+    for (int i = 0; i < NUM_LEDS; i++) {
+      float angleFrac = (float)i / NUM_LEDS;
+      float colorPhase = phase + angleFrac;
+      int slot = ((int)(colorPhase * 6.0f)) % 6;
+      if (slot < 0) slot += 6; // defensive: millis()-derived phase is always >=0, but keep % well-defined
+      strip.setPixelColor(i, strip.Color(RAINBOW6[slot][0], RAINBOW6[slot][1], RAINBOW6[slot][2]));
+    }
+    strip.show();
+  } else if (receivedCommandType == 0x0C) {
+    // 🎨 E9 0C GENERIC PALETTE CYCLE: real decoded colors (showColors5[0..
+    // showColors5Count-1]) rotating around the strip over time, for any
+    // E9 0C capture that isn't the specific known-baked signature above.
+    const unsigned long STEP_MS = 400;
+    int n = showColors5Count > 0 ? showColors5Count : 1;
+    int phase = (int)(millis() / STEP_MS);
+    int segSize = NUM_LEDS / n;
+    for (int s = 0; s < n; s++) {
+      int srcSlot = (s + phase) % n;
+      uint32_t c = strip.Color(showColors5[srcSlot][0], showColors5[srcSlot][1],
+                                showColors5[srcSlot][2]);
+      int startIdx = s * segSize;
+      int count = (s == n - 1) ? (NUM_LEDS - startIdx) : segSize;
+      for (int i = startIdx; i < startIdx + count; i++) {
+        strip.setPixelColor(i, c);
+      }
+    }
+    strip.show();
   } else if (receivedCommandType == 0x12) {
     // 🌊 WAVE PULSE: MagicBand+ replica spinning chaser and center beat.
     // Previously capped at its own hardcoded 6s internal while-loop --
@@ -1223,17 +1266,58 @@ void parseDisneyPacket(const uint8_t *payload, uint16_t len) {
         showColors5[s][1] = col.g;
         showColors5[s][2] = col.b;
       }
+      showColors5Count = 5;
       lastShowSyncTime = now;
       disneyDeviceFound = true;
       Serial.println("   🎨 [Mode 7] 5-Color Palette Ring!");
     }
-    // 0x0C / 0x0E: Strobe Pulse / Rainbow Spectrum (Mode 5 & Mode 8 on Transmitter)
-    else if (showCmd == 0x0C || showCmd == 0x0E) {
-      showR1 = 255; showG1 = 255; showB1 = 255; // White / Strobe
+    // 0x0E: Strobe Pulse (Mode 8 on Transmitter) -- genuinely a strobe,
+    // matches PROTOCOL.md's documented E9 0E layout.
+    else if (showCmd == 0x0E) {
+      showR1 = 255; showG1 = 255; showB1 = 255; // White strobe
       isDualColor = false;
       lastShowSyncTime = now;
       disneyDeviceFound = true;
-      Serial.println("   🎨 [Mode 5/8] Strobe / Show Pulse!");
+      Serial.println("   🎨 [Mode 8] Strobe Pulse!");
+    }
+    // 0x0C: "Animation Codes" -- per emcot.txt/research/BLE_Beacon_Ears,
+    // several known real captures of this opcode ("Taste the Rainbow",
+    // "Blink White") are firmware-baked animation programs where the bytes
+    // are opaque program IDs, NOT real palette data -- decoding "Taste the
+    // Rainbow"'s actual bytes via the normal (mode<<5)|color formula gives
+    // a scrambled non-rainbow sequence (confirmed: Off/Lavender/White/Gold/
+    // Purple/Lime/Cyan/Pink), which is why treating 0x0C uniformly as a
+    // white strobe (the old behavior here) looked wrong on real hardware.
+    // Detect the known signature and reuse the existing Rainbow Wave HSV
+    // cycle instead; anything else falls back to a genuine multi-slot
+    // palette decode + rotation, same philosophy as the Adafruit reference
+    // renderer's two-tier approach for this exact opcode.
+    else if (showCmd == 0x0C) {
+      static const uint8_t RAINBOW_SIG[12] = {0xE1, 0x00, 0xE9, 0x0C, 0x00, 0x0F,
+                                               0x0F, 0x5D, 0x46, 0x5B, 0xF0, 0x05};
+      bool isKnownRainbow = (len >= 14) && (memcmp(payload + 2, RAINBOW_SIG, 12) == 0);
+      if (isKnownRainbow) {
+        receivedCommandType = 0xFC; // known baked "Taste the Rainbow" animation
+        Serial.println("   🌈 [E9 0C] Taste the Rainbow (known animation signature)");
+      } else {
+        // Generic fallback: decode whatever slot bytes are present (up to
+        // 5, matching showColors5's capacity) as real palette data and
+        // rotate through them -- reasonable for the "5 Palette Color
+        // Cycle"-style captures, an approximation for anything else.
+        int slotCount = min(5, (int)len - 9);
+        for (int s = 0; s < slotCount; s++) {
+          uint8_t idx = payload[9 + s] & 0x1F;
+          CRGB col = DISNEY_PALETTE[idx];
+          showColors5[s][0] = col.r;
+          showColors5[s][1] = col.g;
+          showColors5[s][2] = col.b;
+        }
+        showColors5Count = slotCount;
+        receivedCommandType = 0x0C;
+        Serial.printf("   🎨 [E9 0C] Generic %d-slot palette cycle\n", slotCount);
+      }
+      lastShowSyncTime = now;
+      disneyDeviceFound = true;
     }
     // 0x12: Wave Pulse (Mode 6 on Transmitter)
     else if (showCmd == 0x12) {
