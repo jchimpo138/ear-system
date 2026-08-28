@@ -386,6 +386,14 @@ Bench-confirmed against a real MagicBand+, in the standard **wrapped** layout (`
 - Same underlying two-color model as `E9 10`/`E9 13`'s `Mode` 0-4 (confirmed via isolation: setting all colors but NE to Off still showed nothing until NE itself had a real value) — but the animation is **much faster and less predictable** than their steady sweeping chaser, closer to a fast random flicker between the two colors than a moving gap. Implemented as a fast (~90ms) 5-zone random flicker between Center and NE rather than reusing the sweep renderer, which looked visibly wrong for this command.
 - Other real captures of this opcode seen (`E1 00 E9 14 00 0C D0 37 F0 D2 3D 05 0C 0C 0E EC 89 83 51 0E EE 0C 3D B0`, described as "pink pulse, hard cutoff, fades in") do **not** match this layout at all — byte 6 isn't the expected `0F` marker, so like the wrapped `E9 10`/`E9 13` examples, this is a separate undecoded sub-format, not a contradiction of the model above.
 
+#### Non-standard wrapped "pulse" sub-format (seen on both `E9 13` and `E9 14`)
+
+A second wrapped sub-format, distinct from both the standard wrapped layout above and the unwrapped Family 3 layout — identifiable by a `D0 37 F0 D2 3D`-ish byte run starting at offset 6 (where the standard `0x0F` marker would be) instead of the marker itself. Seen on real captures of both `E9 13` (`E1 00 E9 13 00 [TimingByte] D0 37 F0 D2 3D 05 05 00 0E FA 89 83 51 0E E7 A0 B0`) and `E9 14` (`E1 00 E9 14 00 0C D0 37 F0 D2 3D 05 0C 0C 0E EC 89 83 51 0E EE 0C 3D B0`), suggesting it's a shared alternate encoding, not opcode-specific. Most of this structure remains undecoded, but **offset 7 (the same position as the standard Timing Byte) is confirmed live to still control both duration and a visible pulse count**, just via a different formula than the standard one:
+
+- **`pulse_count = 2 × TIME_VAL`** (low nibble of the offset-7 byte) — confirmed exactly across 6 tested values (`TIME_VAL` = 1, 2, 3, 4, 6, 8 → 2, 4, 6, 8, 12, 16 pulses), zero deviation.
+- **`duration ≈ 1.5 × TIME_VAL`** — same slope as the standard formula's scaler=0 case, but with **no `+6.5` constant offset** (every other confirmed command has one). Confirmed against 3 timed values: `TIME_VAL=2`→~3s (predicted 3.0), `TIME_VAL=4`→~7s (predicted 6.0), `TIME_VAL=6`→9.78s (predicted 9.0) — small residual differences likely just measurement imprecision on the rougher readings.
+- Color/pattern bytes for this sub-format are not decoded. The one live-observed example rendered as a solid-color hard-cutoff pulse (not the smooth Timing-Byte fade the standard `FADE_CODE` table would imply), consistent with `E9 13`'s unwrapped layout also showing `FADE_CODE` having no visible effect.
+
 ---
 
 ## 7. Custom Sub-Protocol (`AA 42`)
