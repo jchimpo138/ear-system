@@ -62,7 +62,7 @@
 #endif
 
 #define NUM_LEDS 31
-#define LED_BRIGHTNESS 120
+#define LED_BRIGHTNESS 60
 
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRBW + NEO_KHZ800);
 
@@ -568,6 +568,36 @@ unsigned long lastDebounceTime = 0;
 const unsigned long DEBOUNCE_DELAY = 50;
 uint8_t gHue = 0;
 
+// --- Power/Activity State Log ---
+// For bench-testing power draw against a meter: reports the states this
+// firmware actually has (scan duty mode, LED rail on/off, what's currently
+// rendering) once a second. Deliberately does NOT report "light sleep" or
+// "deep sleep" -- there's no discrete light-sleep mode to report (the CPU
+// just yields briefly every loop() pass via the existing delay(20), that's
+// constant and not a state that varies), and true deep sleep (System OFF)
+// isn't implemented at all yet, so there's nothing real to print for it.
+#define POWER_STATE_LOG_INTERVAL_MS 1000
+unsigned long lastPowerStateLogTime = 0;
+
+void updatePowerStateLog(unsigned long now) {
+  if (now - lastPowerStateLogTime < POWER_STATE_LOG_INTERVAL_MS)
+    return;
+  lastPowerStateLogTime = now;
+
+  const char *activity;
+  if (disneyDeviceFound) {
+    activity = "DISNEY_SHOW";
+  } else if (manualMode != 0) {
+    activity = MODE_NAMES[manualMode];
+  } else {
+    activity = "IDLE";
+  }
+
+  Serial.printf("🔎 [STATE] Scan=%s Rail=%s Activity=%s\n",
+                scanBoosted ? "BOOSTED" : "LAZY", railOn ? "ON" : "OFF",
+                activity);
+}
+
 // --- Disney Microcode Animation Drivers ---
 volatile uint8_t receivedCommandType = 0;
 volatile uint8_t showColors5[5][3]; // 5-slot palette RGB matrix
@@ -998,6 +1028,29 @@ void executeDisneyMicrocode() {
 void setup() {
   Serial.begin(115200);
 
+  // One-off diagnostic: prints the live bootloader version read straight
+  // off this specific chip (not just what's bundled in the toolchain,
+  // which can differ from what's actually flashed), plus BSP version and
+  // MCU serial number. Core Adafruit nRF52 function, safe to call directly
+  // regardless of CFG_DEBUG (the only thing gated behind that macro is
+  // whether main.cpp's own loop_task() calls this automatically).
+  dbgPrintVersion();
+
+  // This board's onboard LSM6DS3TR-C IMU and PDM microphone each have their
+  // own power-enable GPIO (PIN_LSM6DS3TR_C_POWER, PIN_PDM_PWR) -- neither is
+  // driven anywhere in this build (IMU_POLL_TEST is 0, no PDM usage at all),
+  // and the board variant's own init doesn't touch them either, so they're
+  // left as floating inputs at boot with an unknown/possibly-enabled real
+  // state. The IMU alone draws several hundred uA active at its default ODR
+  // if left powered, which lines up with a bench-measured idle floor still
+  // sitting well above the ~1-5uA System OFF figure this project's power
+  // budget assumes even after fixing the blue LED/DC-DC regulator. Neither
+  // sensor is used by this application, so explicitly hold both off.
+  pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);
+  digitalWrite(PIN_LSM6DS3TR_C_POWER, LOW);
+  pinMode(PIN_PDM_PWR, OUTPUT);
+  digitalWrite(PIN_PDM_PWR, LOW);
+
 #if IMU_POLL_TEST
   delay(2000); // give USB serial time to connect
   Serial.println("\n=== IMU polling bring-up test ===");
@@ -1060,6 +1113,25 @@ void setup() {
   // Initialize Bluefruit BLE Central / Scanner
   Bluefruit.begin(0, 1); // 0 Peripherals, 1 Central
   Bluefruit.setTxPower(4);
+
+  // Enable the nRF52840's DC-DC regulator for REG1 (the SoftDevice defaults
+  // to the less-efficient LDO unless told otherwise) -- standard Nordic
+  // power-optimization step, never previously enabled here. Must go through
+  // the SoftDevice API (sd_power_dcdc_mode_set), not a raw register write,
+  // since the SoftDevice (already active after Bluefruit.begin()) owns the
+  // POWER peripheral.
+  sd_power_dcdc_mode_set(NRF_POWER_DCDC_ENABLE);
+
+  // Bluefruit blinks the onboard blue LED continuously any time the
+  // Scanner is active (BLEScanner.cpp calls _startConnLed() on start()) --
+  // which on this firmware is essentially always, since scanning runs for
+  // the device's entire lifetime (lazy or boosted). That's real, sustained
+  // current draw with zero functional purpose here (nothing meaningful to
+  // signal to a wearer via a blinking LED on a sealed prop) -- confirmed
+  // via a bench measurement showing an idle floor well above the ~1-5uA
+  // System OFF figure this project's power budget assumes. Disabling it
+  // before Scanner.start() below stops the timer from ever starting.
+  Bluefruit.autoConnLed(false);
 
   Bluefruit.Scanner.setRxCallback(scan_callback);
   Bluefruit.Scanner.restartOnDisconnect(true);
@@ -1127,6 +1199,8 @@ void loop() {
   updateLowBatteryMonitor(now);
   updateLowBatteryFlash(now);
 #endif
+
+  updatePowerStateLog(now);
 
 #if HAS_BUTTON
   // --- Button Read & Debounce (Short-press cycles modes, Long-press > 1.2s triggers Battery Sweep) ---
